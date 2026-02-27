@@ -31,14 +31,19 @@ const createMailTransporter = () =>
       pass: process.env.SMTP_PASS || ''
     }
   });
-
-// Configuración CORS mejorada para móvil
 app.use(cors({
-  origin: ['http://localhost:3000', 'http://localhost:5173', 'http://192.168.100.224:5173', 'http://192.168.100.224:3000'],
+  origin: process.env.FRONTEND_URL || '*', 
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
+// Configuración CORS mejorada para móvil
+//app.use(cors({
+  //origin: ['http://localhost:3000', 'http://localhost:5173', 'http://192.168.100.224:5173', 'http://192.168.100.224:3000'],
+  //credentials: true,
+  //methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  //allowedHeaders: ['Content-Type', 'Authorization']
+//}));
 
 app.use(express.json({ limit: '200kb' }));
 app.use(middlewareAuditoria); // Middleware para capturar información de auditoría
