@@ -32,14 +32,21 @@ const createMailTransporter = () =>
     }
   });
 
-// Configuración CORS mejorada para móvil
 app.use(cors({
-  origin: ['http://localhost:3000', 'http://localhost:5173', 'http://192.168.100.224:5173', 'http://192.168.100.224:3000','http://localhost:10000', 'https://agromae_b.onrender.com' ],
+  origin: [
+    'http://localhost:3000', 
+    'http://localhost:5173', 
+    'http://192.168.100.224:5173', 
+    'http://192.168.100.224:3000',
+    'http://localhost:10000',
+    'https://agromae.onrender.com',      // ← Tu frontend
+    'https://agromae-b.onrender.com',     // ← Backend corregido (con guion)
+    'https://agromaebackend.onrender.com'  // ← Alternativa si usas otro nombre
+  ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
-
 app.use(express.json({ limit: '200kb' }));
 app.use(middlewareAuditoria); // Middleware para capturar información de auditoría
 const uploadsDir = path.join(__dirname, 'uploads');
