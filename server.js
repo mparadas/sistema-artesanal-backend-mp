@@ -32,38 +32,34 @@ const createMailTransporter = () =>
     }
   });
 
-app.use(cors({
-  origin: [
-    'http://localhost:3000', 
-    'http://localhost:5173', 
-    'http://192.168.100.224:5173', 
+// Configuración CORS mejorada para producción
+const allowedOrigins = [
+    'http://localhost:3000',
+    'http://localhost:5173',
+    'http://192.168.100.224:5173',
     'http://192.168.100.224:3000',
     'http://localhost:10000',
-    'https://agromae.onrender.com',      // ← Tu frontend
-    'https://agromae-b.onrender.com',     // ← Backend corregido (con guion)
-    'https://agromaebackend.onrender.com'  // ← Alternativa si usas otro nombre
-  ],
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
-}));
-app.use(express.json({ limit: '200kb' }));
-app.use(middlewareAuditoria); // Middleware para capturar información de auditoría
-const uploadsDir = path.join(__dirname, 'uploads');
-const uploadsProductosDir = path.join(uploadsDir, 'productos');
-if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
-if (!fs.existsSync(uploadsProductosDir)) fs.mkdirSync(uploadsProductosDir, { recursive: true });
-app.use('/uploads', express.static(uploadsDir));
+    'https://agromae.onrender.com',        // ← Tu frontend (FALTABA)
+    'https://agromae_b.onrender.com',       // ← Tu backend actual
+    'https://agromae-b.onrender.com'        // ← Por si renombras con guion
+];
 
-const cleanStaleEntries = (store, maxAgeMs) => {
-    const now = Date.now();
-    for (const [key, value] of store.entries()) {
-        const ts = value?.ts || value?.firstTs || 0;
-        if (!ts || (now - ts) > maxAgeMs) {
-            store.delete(key);
+app.use(cors({
+    origin: function(origin, callback) {
+        // Permitir requests sin origin (como mobile apps o curl)
+        if (!origin) return callback(null, true);
+        
+        if (allowedOrigins.indexOf(origin) === -1) {
+            console.log('⚠️ CORS bloqueado para origin:', origin);
+            return callback(new Error('CORS policy violation'), false);
         }
-    }
-};
+        return callback(null, true);
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
 
 const publicRateLimit = (req, res, next) => {
     cleanStaleEntries(publicRateStore, PUBLIC_RATE_WINDOW_MS * 3);
