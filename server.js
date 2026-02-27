@@ -39,7 +39,8 @@ app.use(cors({
     'http://localhost:5173', 
     'http://192.168.100.224:5173', 
     'http://192.168.100.224:3000',
-    'https://agromae.onrender.com'
+    'https://agromae.onrender.com',
+    'https://sistema-artesanal-frontend-mp.vercel.app'
   ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
