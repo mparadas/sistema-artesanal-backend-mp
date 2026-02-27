@@ -4113,6 +4113,16 @@ app.use((err, req, res, next) => {
     });
 });
 
+// Health check endpoint para Render
+app.get('/api/health', (req, res) => {
+    res.status(200).json({
+        status: 'OK',
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime(),
+        environment: process.env.NODE_ENV || 'development'
+    });
+});
+
 initDb().then(() => {
     app.listen(PORT, '0.0.0.0', () => {
         console.log(`✅ Servidor corriendo en http://localhost:${PORT}`);
