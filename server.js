@@ -40,7 +40,6 @@ const allowedOrigins = [
     'http://192.168.100.224:3000',
     'http://localhost:10000',
     'https://agromae.onrender.com',        // ← Tu frontend (FALTABA)
-    'https://agromae_b.onrender.com',       // ← Tu backend actual
     'https://agromae-b.onrender.com'        // ← Por si renombras con guion
 ];
 
