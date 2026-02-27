@@ -55,12 +55,6 @@ if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 if (!fs.existsSync(uploadsProductosDir)) fs.mkdirSync(uploadsProductosDir, { recursive: true });
 app.use('/uploads', express.static(uploadsDir));
 
-// Al inicio del archivo donde falla, agrega:
-const cleanStaleEntries = () => {
-  console.log('Limpieza de entradas antiguas - función temporal');
-  // o deja vacío si no es crítico
-};
-
 const cleanStaleEntries = (store, maxAgeMs) => {
     const now = Date.now();
     for (const [key, value] of store.entries()) {
