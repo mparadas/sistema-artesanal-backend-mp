@@ -60,6 +60,11 @@ app.use(cors({
 }));
 
 
+const cleanStaleEntries = () => {
+  console.log('Limpieza de entradas antiguas - función temporal');
+
+};
+
 const publicRateLimit = (req, res, next) => {
     cleanStaleEntries(publicRateStore, PUBLIC_RATE_WINDOW_MS * 3);
     const ip = req.ip || req.headers['x-forwarded-for'] || 'unknown';
