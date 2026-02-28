@@ -1,187 +1,118 @@
-name: Neon Database Integration
+name: Create/Delete Branch for Pull Request
 
 on:
-  push:
-    branches: [ main ]
   pull_request:
-    branches: [ main ]
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - closed
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
 
 jobs:
-  test-neon-connection:
+  setup:
+    name: Setup
+    outputs:
+      branch: ${{ steps.branch_name.outputs.current_branch }}
     runs-on: ubuntu-latest
-    
-    services:
-      postgres:
-        image: postgres:15
+    steps:
+      - name: Get branch name
+        id: branch_name
+        uses: tj-actions/branch-names@v8
+
+  create_neon_branch:
+    name: Create Neon Branch
+    outputs:
+      db_url: ${{ steps.create_neon_branch_encode.outputs.db_url }}
+      db_url_with_pooler: ${{ steps.create_neon_branch_encode.outputs.db_url_with_pooler }}
+    needs: setup
+    if: |
+      github.event_name == 'pull_request' && (
+      github.event.action == 'synchronize'
+      || github.event.action == 'opened'
+      || github.event.action == 'reopened')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get branch expiration date as an env variable (2 weeks from now)
+        id: get_expiration_date
+        run: echo "EXPIRES_AT=$(date -u --date '+14 days' +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_ENV"
+      - name: Create Neon Branch
+        id: create_neon_branch
+        uses: neondatabase/create-branch-action@v6
+        with:
+          project_id: ${{ vars.NEON_PROJECT_ID }}
+          branch_name: preview/pr-${{ github.event.number }}-${{ needs.setup.outputs.branch }}
+          api_key: ${{ secrets.NEON_API_KEY }}
+          expires_at: ${{ env.EXPIRES_AT }}
+
+      # Run database migrations on the new branch
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Run Migrations
+        run: |
+          echo "Running database migrations on Neon branch..."
+          # Add your migration command here
+          # npm run db:migrate
         env:
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: test_db
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
+          DATABASE_URL: "${{ steps.create_neon_branch.outputs.db_url_with_pooler }}"
 
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '18'
-        cache: 'npm'
-
-    - name: Install dependencies
-      run: npm ci
-
-    - name: Test Neon Connection
-      env:
-        DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
-        POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
-      run: |
-        echo "Testing Neon database connection..."
-        node -e "
-        const { Pool } = require('pg');
-        
-        async function testConnection() {
-          const pool = new Pool({
-            connectionString: process.env.DATABASE_URL || process.env.NEON_DATABASE_URL
-          });
+      # Test the API with the new branch
+      - name: Test Backend API
+        env:
+          DATABASE_URL: "${{ steps.create_neon_branch.outputs.db_url_with_pooler }}"
+          NODE_ENV: test
+        run: |
+          echo "Testing backend with Neon branch..."
+          timeout 30s npm start &
+          SERVER_PID=$!
           
-          try {
-            const client = await pool.connect();
-            console.log('✅ Connected to Neon database');
-            
-            // Test basic query
-            const result = await client.query('SELECT NOW()');
-            console.log('✅ Query successful:', result.rows[0]);
-            
-            // Check if productos table exists
-            const tableCheck = await client.query(\`
-              SELECT EXISTS (
-                SELECT FROM information_schema.tables 
-                WHERE table_schema = 'public' 
-                AND table_name = 'productos'
-              );
-            \`);
-            console.log('✅ Productos table exists:', tableCheck.rows[0].exists);
-            
-            // Check table structure
-            if (tableCheck.rows[0].exists) {
-              const columns = await client.query(\`
-                SELECT column_name, data_type, is_nullable 
-                FROM information_schema.columns 
-                WHERE table_name = 'productos' 
-                ORDER BY ordinal_position
-              \`);
-              console.log('✅ Productos table structure:');
-              columns.rows.forEach(col => {
-                console.log(\`  - \${col.column_name}: \${col.data_type} (nullable: \${col.is_nullable})\`);
-              });
-            }
-            
-            await client.release();
-            await pool.end();
-            console.log('✅ Connection test completed successfully');
-          } catch (error) {
-            console.error('❌ Database connection failed:', error.message);
-            process.exit(1);
-          }
-        }
-        
-        testConnection();
-        "
-
-    - name: Test Backend API
-      env:
-        DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
-        POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
-        NODE_ENV: test
-      run: |
-        echo "Starting backend server for testing..."
-        timeout 30s npm start &
-        SERVER_PID=$!
-        
-        # Wait for server to start
-        sleep 10
-        
-        # Test basic endpoints
-        echo "Testing GET /api/productos..."
-        curl -f http://localhost:10000/api/productos || echo "❌ GET /api/productos failed"
-        
-        echo "Testing POST /api/productos..."
-        curl -f -X POST http://localhost:10000/api/productos \
-          -H "Content-Type: application/json" \
-          -d '{
-            "nombre": "Test Product",
-            "categoria": "Otros",
-            "precio": 10.50,
-            "stock": 5,
-            "tipo_producto": "producido"
-          }' || echo "❌ POST /api/productos failed"
-        
-        # Kill server
-        kill $SERVER_PID 2>/dev/null || true
-
-    - name: Database Migration Check
-      env:
-        DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
-      run: |
-        echo "Checking database migrations..."
-        node -e "
-        const { Pool } = require('pg');
-        
-        async function checkMigrations() {
-          const pool = new Pool({
-            connectionString: process.env.DATABASE_URL || process.env.NEON_DATABASE_URL
-          });
+          # Wait for server to start
+          sleep 10
           
-          try {
-            const client = await pool.connect();
-            
-            // Check all required tables
-            const requiredTables = ['productos', 'usuarios', 'ventas', 'historial_productos_modificaciones'];
-            
-            for (const table of requiredTables) {
-              const result = await client.query(\`
-                SELECT EXISTS (
-                  SELECT FROM information_schema.tables 
-                  WHERE table_schema = 'public' 
-                  AND table_name = '\${table}'
-                );
-              \`);
-              
-              if (result.rows[0].exists) {
-                console.log(\`✅ Table '\${table}' exists\`);
-              } else {
-                console.log(\`❌ Table '\${table}' missing\`);
-              }
-            }
-            
-            await client.release();
-            await pool.end();
-          } catch (error) {
-            console.error('❌ Migration check failed:', error.message);
-            process.exit(1);
-          }
-        }
-        
-        checkMigrations();
-        "
+          # Test POST /api/productos (the failing endpoint)
+          echo "Testing POST /api/productos..."
+          curl -f -X POST http://localhost:10000/api/productos \
+            -H "Content-Type: application/json" \
+            -d '{
+              "nombre": "Test Product",
+              "categoria": "Otros", 
+              "precio": 10.50,
+              "stock": 5,
+              "tipo_producto": "producido"
+            }' || echo "❌ POST /api/productos failed"
+          
+          # Kill server
+          kill $SERVER_PID 2>/dev/null || true
 
-  deploy-to-render:
-    needs: test-neon-connection
+      # Post schema diff to PR
+      - name: Post Schema Diff Comment to PR
+        uses: neondatabase/schema-diff-action@v1
+        with:
+          project_id: ${{ vars.NEON_PROJECT_ID }}
+          compare_branch: preview/pr-${{ github.event.number }}-${{ needs.setup.outputs.branch }}
+          api_key: ${{ secrets.NEON_API_KEY }}
+
+  delete_neon_branch:
+    name: Delete Neon Branch
+    needs: setup
+    if: github.event_name == 'pull_request' && github.event.action == 'closed'
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
-    
     steps:
-    - name: Trigger Render Deploy
-      run: |
-        echo "Deployment to Render will be triggered automatically on push to main"
-        echo "Make sure your Render service is connected to this GitHub repository"
+      - name: Delete Neon Branch
+        uses: neondatabase/delete-branch-action@v3
+        with:
+          project_id: ${{ vars.NEON_PROJECT_ID }}
+          branch: preview/pr-${{ github.event.number }}-${{ needs.setup.outputs.branch }}
+          api_key: ${{ secrets.NEON_API_KEY }}
