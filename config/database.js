@@ -1,6 +1,12 @@
 const { Pool } = require('pg');
 require('dotenv').config();
 
+// Debug: Mostrar variables de entorno
+console.log('🔍 Variables de entorno BD:');
+console.log('DATABASE_URL:', process.env.DATABASE_URL ? '✅ Definida' : '❌ No definida');
+console.log('POSTGRES_URL:', process.env.POSTGRES_URL ? '✅ Definida' : '❌ No definida');
+console.log('NEON_DATABASE_URL:', process.env.NEON_DATABASE_URL ? '✅ Definida' : '❌ No definida');
+
 // Configuración inteligente: usa Render si existe DATABASE_URL, sino usa local.
 const config = process.env.DATABASE_URL 
   ? {
@@ -15,6 +21,11 @@ const config = process.env.DATABASE_URL
       port: parseInt(process.env.DB_PORT, 10) || 5432,
       ssl: false
     };
+
+console.log('🔍 Configuración BD:', {
+  connectionString: config.connectionString || 'localhost fallback',
+  ssl: config.ssl
+});
 
 const pool = new Pool(config);
 
