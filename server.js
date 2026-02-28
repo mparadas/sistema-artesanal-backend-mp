@@ -519,6 +519,10 @@ app.post('/api/productos/:id/agregar-existencia', async (req, res) => {
 app.put('/api/productos/:id/mantenimiento', authenticateToken, async (req, res) => {
     const client = await db.pool.connect();
     try {
+        console.log('🔍 Iniciando mantenimiento para producto ID:', req.params.id);
+        console.log('🔍 Usuario:', req.user?.usuario, 'Rol:', req.user?.rol);
+        console.log('🔍 Datos recibidos:', req.body);
+        
         if (!req.user || req.user.rol !== 'admin') return res.status(403).json({ error: 'Permiso denegado' });
         const { id } = req.params;
         const precio = req.body?.precio;
@@ -527,21 +531,32 @@ app.put('/api/productos/:id/mantenimiento', authenticateToken, async (req, res) 
         const usuario = req.user?.usuario || req.auditoria?.usuario || 'sistema';
 
         await client.query('BEGIN');
+        console.log('🔍 Buscando producto con ID:', id);
+        
         const actualResult = await client.query(
             `SELECT id, nombre, precio, precio_canal, imagen_url
              FROM productos
              WHERE id = $1 AND activa = TRUE`,
             [id]
         );
+        
+        console.log('🔍 Producto encontrado:', actualResult.rows.length > 0 ? 'SÍ' : 'NO');
+        
         if (actualResult.rows.length === 0) {
             await client.query('ROLLBACK');
             return res.status(404).json({ error: 'Producto no encontrado' });
         }
+        
         const actual = actualResult.rows[0];
+        console.log('🔍 Datos actuales:', actual);
+        
         const nuevoPrecio = (precio === undefined || precio === null || precio === '') ? null : (parseFloat(precio) || 0);
         const nuevoPrecioCanal = (precio_canal === undefined || precio_canal === null || precio_canal === '') ? null : (parseFloat(precio_canal) || 0);
         const nuevaImagen = (imagen_url === undefined || imagen_url === null || String(imagen_url).trim() === '') ? null : String(imagen_url).trim();
 
+        console.log('🔍 Nuevos valores:', { nuevoPrecio, nuevoPrecioCanal, nuevaImagen });
+
+        console.log('🔍 Actualizando producto...');
         const actualizado = await client.query(
             `UPDATE productos SET
                 precio = COALESCE($1, precio),
@@ -554,7 +569,10 @@ app.put('/api/productos/:id/mantenimiento', authenticateToken, async (req, res) 
         );
 
         const nuevo = actualizado.rows[0];
+        console.log('🔍 Producto actualizado:', nuevo);
+        
         if (nuevoPrecio !== null && Number(nuevoPrecio) !== Number(actual.precio || 0)) {
+            console.log('🔍 Registrando cambio de precio...');
             await client.query(
                 `INSERT INTO historial_productos_modificaciones
                 (producto_id, producto_nombre, tipo_modificacion, valor_anterior, valor_nuevo, usuario, fecha)
@@ -563,6 +581,7 @@ app.put('/api/productos/:id/mantenimiento', authenticateToken, async (req, res) 
             );
         }
         if (nuevoPrecioCanal !== null && Number(nuevoPrecioCanal) !== Number(actual.precio_canal || 0)) {
+            console.log('🔍 Registrando cambio de precio canal...');
             await client.query(
                 `INSERT INTO historial_productos_modificaciones
                 (producto_id, producto_nombre, tipo_modificacion, valor_anterior, valor_nuevo, usuario, fecha)
@@ -571,6 +590,7 @@ app.put('/api/productos/:id/mantenimiento', authenticateToken, async (req, res) 
             );
         }
         if (nuevaImagen && String(nuevaImagen) !== String(actual.imagen_url || '')) {
+            console.log('🔍 Registrando cambio de imagen...');
             await client.query(
                 `INSERT INTO historial_productos_modificaciones
                 (producto_id, producto_nombre, tipo_modificacion, valor_anterior, valor_nuevo, usuario, fecha)
@@ -580,8 +600,10 @@ app.put('/api/productos/:id/mantenimiento', authenticateToken, async (req, res) 
         }
 
         await client.query('COMMIT');
+        console.log('✅ Mantenimiento aplicado exitosamente');
         res.json({ mensaje: 'Mantenimiento aplicado', producto: nuevo });
     } catch (error) {
+        console.error('❌ Error en mantenimiento:', error);
         await client.query('ROLLBACK');
         res.status(500).json({ error: 'Error en mantenimiento de producto', detalle: error.message });
     } finally {
