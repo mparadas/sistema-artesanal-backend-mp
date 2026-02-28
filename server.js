@@ -1,10 +1,16 @@
 const express = require('express');
 const cors = require('cors');
-require('dotenv').config();
+// require('dotenv').config(); // Eliminado para evitar conflicto
 const nodemailer = require('nodemailer');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+
+// Debug inicial - verificar variables ANTES de cargar db
+console.log('🔍 DEBUG INICIAL - Variables de entorno en server.js:');
+console.log('DATABASE_URL:', process.env.DATABASE_URL ? '✅ Definida' : '❌ No definida');
+console.log('POSTGRES_URL:', process.env.POSTGRES_URL ? '✅ Definida' : '❌ No definida');
+console.log('NEON_DATABASE_URL:', process.env.NEON_DATABASE_URL ? '✅ Definida' : '❌ No definida');
 
 const db = require('./config/database');
 const bcrypt = require('bcryptjs');
