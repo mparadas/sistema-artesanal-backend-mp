@@ -4019,6 +4019,96 @@ app.post('/api/tasas-cambio-diarias', async (req, res) => {
     }
 });
 
+// ============================================
+// DASHBOARD - Estadísticas principales
+// ============================================
+
+app.get('/api/dashboard/stats', async (req, res) => {
+    try {
+        console.log('🔍 Obteniendo estadísticas del dashboard...');
+        
+        // Estadísticas de ventas (corregido para manejar el campo total como texto)
+        const ventasStats = await db.query(`
+            SELECT 
+                COUNT(*) as total_ventas,
+                COALESCE(SUM(CAST(REPLACE(REPLACE(total, ',', '.'), '"', '') AS NUMERIC)), 0) as total_ingresos,
+                COALESCE(AVG(CAST(REPLACE(REPLACE(total, ',', '.'), '"', '') AS NUMERIC)), 0) as promedio_venta,
+                COUNT(CASE WHEN estado_pago = 'pagado' THEN 1 END) as ventas_pagadas,
+                COUNT(CASE WHEN estado_pago = 'pendiente' THEN 1 END) as ventas_pendientes,
+                COUNT(CASE WHEN DATE(fecha) = CURRENT_DATE THEN 1 END) as ventas_hoy,
+                COALESCE(SUM(CASE WHEN DATE(fecha) = CURRENT_DATE THEN CAST(REPLACE(REPLACE(total, ',', '.'), '"', '') AS NUMERIC) ELSE 0 END), 0) as total_hoy
+            FROM ventas 
+            WHERE DATE(fecha) >= CURRENT_DATE - INTERVAL '30 days'
+        `);
+        
+        // Estadísticas de productos
+        const productosStats = await db.query(`
+            SELECT 
+                COUNT(*) as total_productos,
+                COUNT(CASE WHEN activa = true THEN 1 END) as productos_activos,
+                COUNT(CASE WHEN stock <= stock_minimo THEN 1 END) as stock_bajo,
+                COALESCE(SUM(stock), 0) as total_stock
+            FROM productos
+        `);
+        
+        // Estadísticas de pedidos
+        const pedidosStats = await db.query(`
+            SELECT 
+                COUNT(*) as total_pedidos,
+                COUNT(CASE WHEN estado = 'pendiente' THEN 1 END) as pedidos_pendientes,
+                COUNT(CASE WHEN estado = 'despachado' THEN 1 END) as pedidos_despachados,
+                COUNT(CASE WHEN DATE(fecha_pedido) = CURRENT_DATE THEN 1 END) as pedidos_hoy
+            FROM pedidos
+            WHERE DATE(fecha_pedido) >= CURRENT_DATE - INTERVAL '30 days'
+        `);
+        
+        // Ventas recientes
+        const ventasRecientes = await db.query(`
+            SELECT 
+                id,
+                fecha,
+                cliente_nombre,
+                CAST(REPLACE(REPLACE(total, ',', '.'), '"', '') AS NUMERIC) as total_limpio,
+                estado_pago,
+                tipo_venta
+            FROM ventas 
+            ORDER BY fecha DESC 
+            LIMIT 5
+        `);
+        
+        console.log('✅ Estadísticas obtenidas correctamente');
+        
+        res.json({
+            ventas: {
+                total_ventas: parseInt(ventasStats.rows[0].total_ventas),
+                total_ingresos: parseFloat(ventasStats.rows[0].total_ingresos),
+                promedio_venta: parseFloat(ventasStats.rows[0].promedio_venta),
+                ventas_pagadas: parseInt(ventasStats.rows[0].ventas_pagadas),
+                ventas_pendientes: parseInt(ventasStats.rows[0].ventas_pendientes),
+                ventas_hoy: parseInt(ventasStats.rows[0].ventas_hoy),
+                total_hoy: parseFloat(ventasStats.rows[0].total_hoy)
+            },
+            productos: {
+                total_productos: parseInt(productosStats.rows[0].total_productos),
+                productos_activos: parseInt(productosStats.rows[0].productos_activos),
+                stock_bajo: parseInt(productosStats.rows[0].stock_bajo),
+                total_stock: parseFloat(productosStats.rows[0].total_stock)
+            },
+            pedidos: {
+                total_pedidos: parseInt(pedidosStats.rows[0].total_pedidos),
+                pedidos_pendientes: parseInt(pedidosStats.rows[0].pedidos_pendientes),
+                pedidos_despachados: parseInt(pedidosStats.rows[0].pedidos_despachados),
+                pedidos_hoy: parseInt(pedidosStats.rows[0].pedidos_hoy)
+            },
+            ventas_recientes: ventasRecientes.rows
+        });
+        
+    } catch (error) {
+        console.error('❌ Error al obtener estadísticas del dashboard:', error.message);
+        res.status(500).json({ error: 'Error al obtener estadísticas del dashboard' });
+    }
+});
+
 // Obtener estadísticas de tasas de cambio
 app.get('/api/tasas-cambio-diarias/estadisticas', async (req, res) => {
     try {
