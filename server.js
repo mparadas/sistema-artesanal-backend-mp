@@ -674,7 +674,8 @@ app.post('/api/ingredientes', async (req, res) => {
         
         const ingredienteCreado = result.rows[0];
         
-        // Registrar auditoría
+        // Registrar auditoría (desactivado temporalmente para depuración)
+        /*
         await registrarAuditoria({
             tabla: 'ingredientes',
             registroId: ingredienteCreado.id,
@@ -684,6 +685,7 @@ app.post('/api/ingredientes', async (req, res) => {
             ipAddress: req.auditoria?.ipAddress,
             userAgent: req.auditoria?.userAgent
         });
+        */
         
         res.status(201).json(ingredienteCreado);
     } catch (error) {
