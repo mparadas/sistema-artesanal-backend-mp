@@ -330,6 +330,8 @@ app.post('/api/productos', async (req, res) => {
         );
         
         const productoCreado = result.rows[0];
+        console.log('🔍 Producto creado con ID:', productoCreado.id);
+        console.log('🔍 Datos completos:', productoCreado);
         
         // Registrar auditoría (desactivado temporalmente para depuración)
         /*
