@@ -404,7 +404,8 @@ app.put('/api/productos/:id', async (req, res) => {
         
         const productoActualizado = result.rows[0];
         
-        // Registrar auditoría
+        // Registrar auditoría (desactivado temporalmente para depuración)
+        /*
         await registrarAuditoria({
             tabla: 'productos',
             registroId: parseInt(id),
@@ -415,6 +416,7 @@ app.put('/api/productos/:id', async (req, res) => {
             ipAddress: req.auditoria?.ipAddress,
             userAgent: req.auditoria?.userAgent
         });
+        */
         
         res.json(productoActualizado);
     } catch (error) {
@@ -435,7 +437,8 @@ app.delete('/api/productos/:id', async (req, res) => {
         const result = await db.query('UPDATE productos SET activa = FALSE WHERE id = $1 RETURNING *', [id]);
         if (result.rows.length === 0) return res.status(404).json({ error: 'Producto no encontrado' });
         
-        // Registrar auditoría
+        // Registrar auditoría (desactivado temporalmente para depuración)
+        /*
         await registrarAuditoria({
             tabla: 'productos',
             registroId: parseInt(id),
@@ -445,8 +448,9 @@ app.delete('/api/productos/:id', async (req, res) => {
             ipAddress: req.auditoria?.ipAddress,
             userAgent: req.auditoria?.userAgent
         });
+        */
         
-        res.json({ mensaje: 'Producto eliminado correctamente', producto: result.rows[0] });
+        res.json({ mensaje: 'Producto eliminado', producto: datosEliminados });
     } catch (error) {
         res.status(500).json({ error: 'Error al eliminar producto', detalle: error.message });
     }
