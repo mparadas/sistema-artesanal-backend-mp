@@ -331,7 +331,8 @@ app.post('/api/productos', async (req, res) => {
         
         const productoCreado = result.rows[0];
         
-        // Registrar auditoría
+        // Registrar auditoría (desactivado temporalmente para depuración)
+        /*
         await registrarAuditoria({
             tabla: 'productos',
             registroId: productoCreado.id,
@@ -341,6 +342,7 @@ app.post('/api/productos', async (req, res) => {
             ipAddress: req.auditoria?.ipAddress,
             userAgent: req.auditoria?.userAgent
         });
+        */
         
         res.status(201).json(productoCreado);
     } catch (error) {
