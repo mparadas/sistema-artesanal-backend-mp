@@ -1666,11 +1666,11 @@ app.put('/api/ventas/:id', async (req, res) => {
     }
 });
 
-// Endpoint específico para anular venta (usando solo campos existentes)
+// Endpoint específico para devolver venta a pedidos (usando solo campos existentes)
 app.put('/api/ventas/:id/devolver-a-pedidos', async (req, res) => {
     try {
         const { id } = req.params;
-        console.log('🔍 DEBUG - Anulando venta ID:', id);
+        console.log('🔍 DEBUG - Devolviendo venta a pedidos ID:', id);
         
         // Verificar que la venta exista
         const ventaActual = await db.query('SELECT id, estado_pago, total, monto_pagado, saldo_pendiente FROM ventas WHERE id = $1', [id]);
@@ -1682,14 +1682,14 @@ app.put('/api/ventas/:id/devolver-a-pedidos', async (req, res) => {
         const ventaAntes = ventaActual.rows[0];
         console.log('✅ DEBUG - Venta encontrada ANTES:', ventaAntes);
         
-        // Anular la venta (usando solo campos que existen en la tabla)
-        console.log('🔍 DEBUG - Anulando venta...');
+        // Devolver a pedidos la venta (usando solo campos que existen en la tabla)
+        console.log('🔍 DEBUG - Devolviendo venta a pedidos...');
         const result = await db.query(`
             UPDATE ventas SET 
                 total = 0, 
                 monto_pagado = 0, 
                 saldo_pendiente = 0,
-                estado_pago = 'anulada',
+                estado_pago = 'devuelta_a_pedidos',
                 actualizado_en = NOW()
             WHERE id = $1
             RETURNING id, estado_pago, total, monto_pagado, saldo_pendiente, actualizado_en
@@ -1699,16 +1699,16 @@ app.put('/api/ventas/:id/devolver-a-pedidos', async (req, res) => {
         console.log('✅ DEBUG - Venta actualizada DESPUÉS:', ventaDespues);
         
         // Verificar que realmente se actualizó
-        if (ventaDespues.estado_pago !== 'anulada') {
+        if (ventaDespues.estado_pago !== 'devuelta_a_pedidos') {
             console.log('❌ ERROR - El estado no se actualizó correctamente');
             return res.status(500).json({ error: 'No se pudo actualizar el estado de la venta' });
         }
         
-        console.log('✅ DEBUG - Venta anulada correctamente');
+        console.log('✅ DEBUG - Venta devuelta a pedidos correctamente');
         
         res.json({ 
-            mensaje: 'Venta anulada correctamente', 
-            ventaAnulada: {
+            mensaje: 'Venta devuelta a pedidos correctamente', 
+            ventaDevuelta: {
                 id: ventaDespues.id,
                 estado: ventaDespues.estado_pago,
                 total: ventaDespues.total,
@@ -1718,8 +1718,8 @@ app.put('/api/ventas/:id/devolver-a-pedidos', async (req, res) => {
             }
         });
     } catch (error) {
-        console.error('❌ ERROR al anular venta:', error);
-        res.status(500).json({ error: 'Error al anular venta', detalle: error.message });
+        console.error('❌ ERROR al devolver venta a pedidos:', error);
+        res.status(500).json({ error: 'Error al devolver venta a pedidos', detalle: error.message });
     }
 });
 
