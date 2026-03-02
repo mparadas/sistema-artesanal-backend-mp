@@ -1659,22 +1659,23 @@ app.put('/api/ventas/:id', async (req, res) => {
     }
 });
 
-// Endpoint específico para anular venta (versión ultra simplificada)
+// Endpoint específico para anular venta (usando solo campos existentes)
 app.put('/api/ventas/:id/devolver-a-pedidos', async (req, res) => {
     try {
         const { id } = req.params;
         console.log('🔍 DEBUG - Anulando venta ID:', id);
         
         // Verificar que la venta exista
-        const ventaActual = await db.query('SELECT id FROM ventas WHERE id = $1', [id]);
+        const ventaActual = await db.query('SELECT id, estado_pago FROM ventas WHERE id = $1', [id]);
         if (ventaActual.rows.length === 0) {
             console.log('❌ ERROR - Venta no encontrada:', id);
             return res.status(404).json({ error: 'Venta no encontrada' });
         }
         
-        console.log('✅ DEBUG - Venta encontrada, anulando...');
+        console.log('✅ DEBUG - Venta encontrada, estado:', ventaActual.rows[0].estado_pago);
         
-        // Anular la venta (versión ultra simple)
+        // Anular la venta (usando solo campos que existen en la tabla)
+        console.log('🔍 DEBUG - Anulando venta...');
         await db.query(`
             UPDATE ventas SET 
                 total = 0, 
