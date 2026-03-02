@@ -1661,45 +1661,85 @@ app.put('/api/ventas/:id', async (req, res) => {
 
 // Endpoint específico para devolver venta a pedidos
 app.put('/api/ventas/:id/devolver-a-pedidos', async (req, res) => {
+    const client = await db.pool.connect();
     try {
+        await client.query('BEGIN');
+        
         const { id } = req.params;
-        const { estado_pago, motivo_devolucion, fecha_devolucion } = req.body;
+        const { motivo_devolucion, fecha_devolucion } = req.body;
         
         // Verificar que la venta exista y esté pendiente
-        const ventaActual = await db.query('SELECT estado_pago, cliente_nombre, total, moneda_original FROM ventas WHERE id = $1', [id]);
+        const ventaActual = await client.query('SELECT * FROM ventas WHERE id = $1', [id]);
         if (ventaActual.rows.length === 0) {
+            await client.query('ROLLBACK');
             return res.status(404).json({ error: 'Venta no encontrada' });
         }
         
-        const { estado_pago: estadoActual } = ventaActual.rows[0];
+        const venta = ventaActual.rows[0];
         
         // Solo se pueden devolver ventas pendientes
-        if (estadoActual !== 'pendiente') {
+        if (venta.estado_pago !== 'pendiente') {
+            await client.query('ROLLBACK');
             return res.status(400).json({ error: 'Solo se pueden devolver ventas con estado pendiente' });
         }
         
-        // Actualizar la venta a estado "devuelta_a_pedidos"
-        const result = await db.query(
-            'UPDATE ventas SET estado_pago = $1, motivo_devolucion = $2, fecha_devolucion = $3, actualizado_en = NOW() WHERE id = $4 RETURNING *',
-            ['devuelta_a_pedidos', motivo_devolucion || 'Devuelta a pedidos por administrador', fecha_devolucion || new Date().toISOString(), id]
-        );
+        // 1. Devolver productos al stock
+        const detallesVenta = await client.query('SELECT producto_id, cantidad FROM venta_detalles WHERE venta_id = $1', [id]);
+        for (const item of detallesVenta.rows) {
+            await client.query('UPDATE productos SET stock = stock + $1, actualizado_en = NOW() WHERE id = $2', [item.cantidad, item.producto_id]);
+        }
+        
+        // 2. Crear pedido en estado inicializada
+        const nuevoPedido = await client.query(`
+            INSERT INTO pedidos (
+                cliente_id, cliente_nombre, cliente_telefono, 
+                productos, total, estado, 
+                creado_en, actualizado_en,
+                origen_venta_id, motivo_devolucion
+            ) VALUES (
+                $1, $2, $3, 
+                $4, $5, 'inicializada', 
+                NOW(), NOW(),
+                $6, $7
+            ) RETURNING *
+        `, [
+            venta.cliente_id,
+            venta.cliente_nombre || 'Cliente general',
+            venta.cliente_telefono,
+            JSON.stringify(detallesVenta.rows),
+            venta.total,
+            id, // origen_venta_id
+            motivo_devolucion || 'Devuelta desde ventas'
+        ]);
+        
+        // 3. Eliminar detalles de la venta
+        await client.query('DELETE FROM venta_detalles WHERE venta_id = $1', [id]);
+        
+        // 4. Eliminar la venta
+        await client.query('DELETE FROM ventas WHERE id = $1', [id]);
         
         // Registrar auditoría
         await registrarAuditoria({
             accion: 'DEVOLVER_A_PEDIDOS',
             tabla: 'ventas',
             registro_id: id,
-            detalles: `Venta devuelta a pedidos: ${motivo_devolucion}`,
+            detalles: `Venta #${id} devuelta a pedidos #${nuevoPedido.rows[0].id}: ${motivo_devolucion}`,
             usuario_id: req.usuario?.id || null
         });
         
+        await client.query('COMMIT');
+        
         res.json({ 
             mensaje: 'Venta devuelta a pedidos correctamente', 
-            venta: result.rows[0] 
+            pedido: nuevoPedido.rows[0],
+            ventaEliminada: id
         });
     } catch (error) {
+        await client.query('ROLLBACK');
         console.error('Error al devolver venta a pedidos:', error);
         res.status(500).json({ error: 'Error al devolver venta a pedidos', detalle: error.message });
+    } finally {
+        client.release();
     }
 });
 
