@@ -1668,25 +1668,36 @@ app.put('/api/ventas/:id/devolver-a-pedidos', async (req, res) => {
         const { id } = req.params;
         const { motivo_devolucion, fecha_devolucion } = req.body;
         
-        // Verificar que la venta exista y esté pendiente
+        console.log('🔍 DEBUG - Intentando devolver venta ID:', id);
+        console.log('🔍 DEBUG - Body:', { motivo_devolucion, fecha_devolucion });
+        
+        // Verificar que la venta exista
         const ventaActual = await client.query('SELECT * FROM ventas WHERE id = $1', [id]);
         if (ventaActual.rows.length === 0) {
             await client.query('ROLLBACK');
+            console.log('❌ ERROR - Venta no encontrada:', id);
             return res.status(404).json({ error: 'Venta no encontrada' });
         }
         
         const venta = ventaActual.rows[0];
+        console.log('🔍 DEBUG - Venta encontrada:', { id: venta.id, estado: venta.estado_pago, cliente: venta.cliente_nombre });
         
         // Solo se pueden devolver ventas pendientes
         if (venta.estado_pago !== 'pendiente') {
             await client.query('ROLLBACK');
-            return res.status(400).json({ error: 'Solo se pueden devolver ventas con estado pendiente' });
+            console.log('❌ ERROR - Venta no está pendiente:', venta.estado_pago);
+            return res.status(400).json({ error: `Solo se pueden devolver ventas con estado pendiente. Estado actual: ${venta.estado_pago}` });
         }
+        
+        console.log('✅ DEBUG - Validación pasada, procediendo con devolución...');
         
         // 1. Devolver productos al stock
         const detallesVenta = await client.query('SELECT producto_id, cantidad FROM venta_detalles WHERE venta_id = $1', [id]);
+        console.log('🔍 DEBUG - Detalles de venta:', detallesVenta.rows.length, 'productos');
+        
         for (const item of detallesVenta.rows) {
             await client.query('UPDATE productos SET stock = stock + $1, actualizado_en = NOW() WHERE id = $2', [item.cantidad, item.producto_id]);
+            console.log('🔍 DEBUG - Stock devuelto:', { producto_id: item.producto_id, cantidad: item.cantidad });
         }
         
         // 2. Intentar crear pedido (opcional - si falla, continuar con la anulación)
@@ -1702,6 +1713,7 @@ app.put('/api/ventas/:id/devolver-a-pedidos', async (req, res) => {
             `);
             
             if (tablaPedidosExiste.rows[0].exists) {
+                console.log('🔍 DEBUG - Tabla pedidos existe, intentando crear pedido...');
                 // Intentar crear pedido con columnas básicas
                 const resultadoPedido = await client.query(`
                     INSERT INTO pedidos (
@@ -1721,12 +1733,16 @@ app.put('/api/ventas/:id/devolver-a-pedidos', async (req, res) => {
                     venta.total
                 ]);
                 pedidoCreado = resultadoPedido.rows[0];
+                console.log('✅ DEBUG - Pedido creado:', pedidoCreado.id);
+            } else {
+                console.log('⚠️ DEBUG - Tabla pedidos no existe, omitiendo creación de pedido');
             }
         } catch (pedidoError) {
             console.log('⚠️ No se pudo crear pedido, pero se continuará con la anulación:', pedidoError.message);
         }
         
         // 3. Anular la venta (mantener registro con montos en cero)
+        console.log('🔍 DEBUG - Anulando venta...');
         await client.query(`
             UPDATE ventas SET 
                 total = 0, 
@@ -1742,9 +1758,11 @@ app.put('/api/ventas/:id/devolver-a-pedidos', async (req, res) => {
             fecha_devolucion || new Date().toISOString(),
             id
         ]);
+        console.log('✅ DEBUG - Venta anulada correctamente');
         
         // 4. Eliminar detalles de la venta
         await client.query('DELETE FROM venta_detalles WHERE venta_id = $1', [id]);
+        console.log('✅ DEBUG - Detalles de venta eliminados');
         
         // Registrar auditoría
         await registrarAuditoria({
@@ -1756,6 +1774,7 @@ app.put('/api/ventas/:id/devolver-a-pedidos', async (req, res) => {
         });
         
         await client.query('COMMIT');
+        console.log('✅ DEBUG - Transacción completada exitosamente');
         
         res.json({ 
             mensaje: 'Venta devuelta a pedidos correctamente', 
@@ -1770,7 +1789,7 @@ app.put('/api/ventas/:id/devolver-a-pedidos', async (req, res) => {
         });
     } catch (error) {
         await client.query('ROLLBACK');
-        console.error('Error al devolver venta a pedidos:', error);
+        console.error('❌ ERROR al devolver venta a pedidos:', error);
         res.status(500).json({ error: 'Error al devolver venta a pedidos', detalle: error.message });
     } finally {
         client.release();
