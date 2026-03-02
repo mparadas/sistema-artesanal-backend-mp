@@ -53,7 +53,7 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
-app.use(express.json({ limit: '200kb' }));
+app.use(express.json({ limit: '10mb' }));
 app.use(middlewareAuditoria); // Middleware para capturar información de auditoría
 const uploadsDir = path.join(__dirname, 'uploads');
 const uploadsProductosDir = path.join(uploadsDir, 'productos');
@@ -212,6 +212,13 @@ app.get('/api/health', async (req, res) => {
 
 app.post('/api/uploads/productos', authenticateToken, async (req, res) => {
     try {
+        // Headers CORS específicos para upload
+        res.header('Access-Control-Allow-Origin', '*');
+        res.header('Access-Control-Allow-Methods', 'POST, OPTIONS');
+        res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+        res.header('Access-Control-Allow-Credentials', 'true');
+        
+        
         if (!req.user || req.user.rol !== 'admin') {
             return res.status(403).json({ error: 'Permiso denegado' });
         }
