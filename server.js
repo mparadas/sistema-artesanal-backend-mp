@@ -1659,49 +1659,33 @@ app.put('/api/ventas/:id', async (req, res) => {
     }
 });
 
-// Endpoint específico para anular venta (solo anulación, sin devolver a pedidos)
+// Endpoint específico para anular venta (versión ultra simplificada)
 app.put('/api/ventas/:id/devolver-a-pedidos', async (req, res) => {
-    const client = await db.pool.connect();
     try {
-        await client.query('BEGIN');
-        
         const { id } = req.params;
-        const { motivo_devolucion, fecha_devolucion } = req.body;
-        
         console.log('🔍 DEBUG - Anulando venta ID:', id);
         
         // Verificar que la venta exista
-        const ventaActual = await client.query('SELECT * FROM ventas WHERE id = $1', [id]);
+        const ventaActual = await db.query('SELECT id FROM ventas WHERE id = $1', [id]);
         if (ventaActual.rows.length === 0) {
-            await client.query('ROLLBACK');
             console.log('❌ ERROR - Venta no encontrada:', id);
             return res.status(404).json({ error: 'Venta no encontrada' });
         }
         
-        const venta = ventaActual.rows[0];
-        console.log('🔍 DEBUG - Venta encontrada:', { id: venta.id, estado: venta.estado_pago });
+        console.log('✅ DEBUG - Venta encontrada, anulando...');
         
-        // Anular la venta (mantener registro con montos en cero)
-        console.log('🔍 DEBUG - Anulando venta...');
-        await client.query(`
+        // Anular la venta (versión ultra simple)
+        await db.query(`
             UPDATE ventas SET 
                 total = 0, 
                 monto_pagado = 0, 
                 saldo_pendiente = 0,
                 estado_pago = 'anulada',
-                motivo_anulacion = $1,
-                fecha_anulacion = $2,
                 actualizado_en = NOW()
-            WHERE id = $3
-        `, [
-            'Anulada por administrador',
-            fecha_devolucion || new Date().toISOString(),
-            id
-        ]);
-        console.log('✅ DEBUG - Venta anulada correctamente');
+            WHERE id = $1
+        `, [id]);
         
-        await client.query('COMMIT');
-        console.log('✅ DEBUG - Transacción completada exitosamente');
+        console.log('✅ DEBUG - Venta anulada correctamente');
         
         res.json({ 
             mensaje: 'Venta anulada correctamente', 
@@ -1714,11 +1698,8 @@ app.put('/api/ventas/:id/devolver-a-pedidos', async (req, res) => {
             }
         });
     } catch (error) {
-        await client.query('ROLLBACK');
         console.error('❌ ERROR al anular venta:', error);
         res.status(500).json({ error: 'Error al anular venta', detalle: error.message });
-    } finally {
-        client.release();
     }
 });
 
