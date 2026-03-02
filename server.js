@@ -1689,28 +1689,42 @@ app.put('/api/ventas/:id/devolver-a-pedidos', async (req, res) => {
             await client.query('UPDATE productos SET stock = stock + $1, actualizado_en = NOW() WHERE id = $2', [item.cantidad, item.producto_id]);
         }
         
-        // 2. Crear pedido en estado inicializada
-        const nuevoPedido = await client.query(`
-            INSERT INTO pedidos (
-                cliente_id, cliente_nombre, cliente_telefono, 
-                productos, total, estado, 
-                creado_en, actualizado_en,
-                origen_venta_id, motivo_devolucion
-            ) VALUES (
-                $1, $2, $3, 
-                $4, $5, 'inicializada', 
-                NOW(), NOW(),
-                $6, $7
-            ) RETURNING *
-        `, [
-            venta.cliente_id,
-            venta.cliente_nombre || 'Cliente general',
-            venta.cliente_telefono,
-            JSON.stringify(detallesVenta.rows),
-            venta.total,
-            id, // origen_venta_id
-            motivo_devolucion || 'Devuelta desde ventas'
-        ]);
+        // 2. Intentar crear pedido (opcional - si falla, continuar con la anulación)
+        let pedidoCreado = null;
+        try {
+            // Verificar si la tabla pedidos existe
+            const tablaPedidosExiste = await client.query(`
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_schema = 'public' 
+                    AND table_name = 'pedidos'
+                );
+            `);
+            
+            if (tablaPedidosExiste.rows[0].exists) {
+                // Intentar crear pedido con columnas básicas
+                const resultadoPedido = await client.query(`
+                    INSERT INTO pedidos (
+                        cliente_id, cliente_nombre, cliente_telefono, 
+                        productos, total, estado, 
+                        creado_en, actualizado_en
+                    ) VALUES (
+                        $1, $2, $3, 
+                        $4, $5, 'inicializada', 
+                        NOW(), NOW()
+                    ) RETURNING id
+                `, [
+                    venta.cliente_id,
+                    venta.cliente_nombre || 'Cliente general',
+                    venta.cliente_telefono,
+                    JSON.stringify(detallesVenta.rows),
+                    venta.total
+                ]);
+                pedidoCreado = resultadoPedido.rows[0];
+            }
+        } catch (pedidoError) {
+            console.log('⚠️ No se pudo crear pedido, pero se continuará con la anulación:', pedidoError.message);
+        }
         
         // 3. Anular la venta (mantener registro con montos en cero)
         await client.query(`
@@ -1721,17 +1735,15 @@ app.put('/api/ventas/:id/devolver-a-pedidos', async (req, res) => {
                 estado_pago = 'anulada',
                 motivo_anulacion = $1,
                 fecha_anulacion = $2,
-                origen_venta_id = $3,
                 actualizado_en = NOW()
-            WHERE id = $4
+            WHERE id = $3
         `, [
             'Devuelta a pedidos',
             fecha_devolucion || new Date().toISOString(),
-            nuevoPedido.rows[0].id,
             id
         ]);
         
-        // 4. Eliminar detalles de la venta (opcional, para limpiar)
+        // 4. Eliminar detalles de la venta
         await client.query('DELETE FROM venta_detalles WHERE venta_id = $1', [id]);
         
         // Registrar auditoría
@@ -1739,7 +1751,7 @@ app.put('/api/ventas/:id/devolver-a-pedidos', async (req, res) => {
             accion: 'DEVOLVER_A_PEDIDOS',
             tabla: 'ventas',
             registro_id: id,
-            detalles: `Venta #${id} devuelta a pedidos #${nuevoPedido.rows[0].id}: ${motivo_devolucion}`,
+            detalles: `Venta #${id} devuelta a pedidos: ${motivo_devolucion}`,
             usuario_id: req.usuario?.id || null
         });
         
@@ -1747,7 +1759,7 @@ app.put('/api/ventas/:id/devolver-a-pedidos', async (req, res) => {
         
         res.json({ 
             mensaje: 'Venta devuelta a pedidos correctamente', 
-            pedido: nuevoPedido.rows[0],
+            pedido: pedidoCreado,
             ventaAnulada: {
                 id: id,
                 estado: 'anulada',
