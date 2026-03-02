@@ -1666,17 +1666,18 @@ app.put('/api/ventas/:id/devolver-a-pedidos', async (req, res) => {
         console.log('🔍 DEBUG - Anulando venta ID:', id);
         
         // Verificar que la venta exista
-        const ventaActual = await db.query('SELECT id, estado_pago FROM ventas WHERE id = $1', [id]);
+        const ventaActual = await db.query('SELECT id, estado_pago, total, monto_pagado, saldo_pendiente FROM ventas WHERE id = $1', [id]);
         if (ventaActual.rows.length === 0) {
             console.log('❌ ERROR - Venta no encontrada:', id);
             return res.status(404).json({ error: 'Venta no encontrada' });
         }
         
-        console.log('✅ DEBUG - Venta encontrada, estado:', ventaActual.rows[0].estado_pago);
+        const ventaAntes = ventaActual.rows[0];
+        console.log('✅ DEBUG - Venta encontrada ANTES:', ventaAntes);
         
         // Anular la venta (usando solo campos que existen en la tabla)
         console.log('🔍 DEBUG - Anulando venta...');
-        await db.query(`
+        const result = await db.query(`
             UPDATE ventas SET 
                 total = 0, 
                 monto_pagado = 0, 
@@ -1684,18 +1685,29 @@ app.put('/api/ventas/:id/devolver-a-pedidos', async (req, res) => {
                 estado_pago = 'anulada',
                 actualizado_en = NOW()
             WHERE id = $1
+            RETURNING id, estado_pago, total, monto_pagado, saldo_pendiente, actualizado_en
         `, [id]);
+        
+        const ventaDespues = result.rows[0];
+        console.log('✅ DEBUG - Venta actualizada DESPUÉS:', ventaDespues);
+        
+        // Verificar que realmente se actualizó
+        if (ventaDespues.estado_pago !== 'anulada') {
+            console.log('❌ ERROR - El estado no se actualizó correctamente');
+            return res.status(500).json({ error: 'No se pudo actualizar el estado de la venta' });
+        }
         
         console.log('✅ DEBUG - Venta anulada correctamente');
         
         res.json({ 
             mensaje: 'Venta anulada correctamente', 
             ventaAnulada: {
-                id: id,
-                estado: 'anulada',
-                total: 0,
-                monto_pagado: 0,
-                saldo_pendiente: 0
+                id: ventaDespues.id,
+                estado: ventaDespues.estado_pago,
+                total: ventaDespues.total,
+                monto_pagado: ventaDespues.monto_pagado,
+                saldo_pendiente: ventaDespues.saldo_pendiente,
+                actualizado_en: ventaDespues.actualizado_en
             }
         });
     } catch (error) {
