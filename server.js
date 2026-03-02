@@ -1668,46 +1668,102 @@ app.put('/api/ventas/:id', async (req, res) => {
 
 // Endpoint específico para devolver venta a pedidos (usando solo campos existentes)
 app.put('/api/ventas/:id/devolver-a-pedidos', async (req, res) => {
+    const client = await db.pool.connect();
     try {
         const { id } = req.params;
-        console.log('🔍 DEBUG - Devolviendo venta a pedidos ID:', id);
-        
-        // Verificar que la venta exista
-        const ventaActual = await db.query('SELECT id, estado_pago, total, monto_pagado, saldo_pendiente FROM ventas WHERE id = $1', [id]);
+        console.log('🔄 Devolver venta a pedidos ID:', id);
+
+        await client.query('BEGIN');
+
+        // 1) Validar venta y obtener sus datos
+        const ventaActual = await client.query(
+            `SELECT id, cliente_id, cliente_nombre, estado_pago, total, monto_pagado, saldo_pendiente, fecha_vencimiento
+             FROM ventas WHERE id = $1`,
+            [id]
+        );
         if (ventaActual.rows.length === 0) {
-            console.log('❌ ERROR - Venta no encontrada:', id);
+            await client.query('ROLLBACK');
             return res.status(404).json({ error: 'Venta no encontrada' });
         }
-        
-        const ventaAntes = ventaActual.rows[0];
-        console.log('✅ DEBUG - Venta encontrada ANTES:', ventaAntes);
-        
-        // Devolver a pedidos la venta (usando solo campos que existen en la tabla)
-        console.log('🔍 DEBUG - Devolviendo venta a pedidos...');
-        const result = await db.query(`
-            UPDATE ventas SET 
-                total = 0, 
-                monto_pagado = 0, 
+        const venta = ventaActual.rows[0];
+
+        // 2) Obtener detalle de la venta para crear/restaurar pedido
+        const detalleVenta = await client.query(
+            `SELECT producto_id, cantidad
+             FROM venta_detalles
+             WHERE venta_id = $1
+             ORDER BY id ASC`,
+            [id]
+        );
+        if (detalleVenta.rows.length === 0) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ error: 'La venta no tiene detalles para devolver a pedidos' });
+        }
+
+        // 3) Buscar si ya existe pedido vinculado a esta venta
+        let pedidoId = null;
+        const pedidoExistente = await client.query(
+            `SELECT id FROM pedidos WHERE venta_id = $1 ORDER BY id DESC LIMIT 1`,
+            [id]
+        );
+
+        if (pedidoExistente.rows.length > 0) {
+            pedidoId = pedidoExistente.rows[0].id;
+
+            // Restaurar pedido existente
+            await client.query(
+                `UPDATE pedidos
+                 SET estado = 'pendiente',
+                     venta_id = NULL,
+                     actualizado_en = NOW()
+                 WHERE id = $1`,
+                [pedidoId]
+            );
+            await client.query(`DELETE FROM pedido_items WHERE pedido_id = $1`, [pedidoId]);
+        } else {
+            const pedidoNotas = `Devuelto desde venta #${id} el ${new Date().toISOString()}`;
+            const nuevoPedido = await client.query(
+                `INSERT INTO pedidos (cliente_id, cliente_nombre, notas, estado, venta_id)
+                 VALUES ($1, $2, $3, 'pendiente', NULL)
+                 RETURNING id`,
+                [venta.cliente_id || null, venta.cliente_nombre || 'Cliente general', pedidoNotas]
+            );
+            pedidoId = nuevoPedido.rows[0].id;
+        }
+
+        // 4) Cargar items del pedido desde la venta
+        for (const item of detalleVenta.rows) {
+            await client.query(
+                `INSERT INTO pedido_items (pedido_id, producto_id, cantidad_pedida, cantidad_entregada, peso_entregado)
+                 VALUES ($1, $2, $3, 0, 0)`,
+                [pedidoId, item.producto_id, item.cantidad]
+            );
+        }
+
+        // 5) Marcar venta como devuelta
+        const result = await client.query(
+            `UPDATE ventas SET
+                total = 0,
+                monto_pagado = 0,
                 saldo_pendiente = 0,
                 estado_pago = 'devuelta_a_pedidos',
                 actualizado_en = NOW()
-            WHERE id = $1
-            RETURNING id, estado_pago, total, monto_pagado, saldo_pendiente, actualizado_en
-        `, [id]);
-        
+             WHERE id = $1
+             RETURNING id, estado_pago, total, monto_pagado, saldo_pendiente, actualizado_en`,
+            [id]
+        );
         const ventaDespues = result.rows[0];
-        console.log('✅ DEBUG - Venta actualizada DESPUÉS:', ventaDespues);
-        
-        // Verificar que realmente se actualizó
-        if (ventaDespues.estado_pago !== 'devuelta_a_pedidos') {
-            console.log('❌ ERROR - El estado no se actualizó correctamente');
+
+        if (!ventaDespues || ventaDespues.estado_pago !== 'devuelta_a_pedidos') {
+            await client.query('ROLLBACK');
             return res.status(500).json({ error: 'No se pudo actualizar el estado de la venta' });
         }
-        
-        console.log('✅ DEBUG - Venta devuelta a pedidos correctamente');
-        
-        res.json({ 
-            mensaje: 'Venta devuelta a pedidos correctamente', 
+
+        await client.query('COMMIT');
+
+        res.json({
+            mensaje: 'Venta devuelta a pedidos correctamente',
+            pedido_id: pedidoId,
             ventaDevuelta: {
                 id: ventaDespues.id,
                 estado: ventaDespues.estado_pago,
@@ -1718,8 +1774,11 @@ app.put('/api/ventas/:id/devolver-a-pedidos', async (req, res) => {
             }
         });
     } catch (error) {
+        await client.query('ROLLBACK');
         console.error('❌ ERROR al devolver venta a pedidos:', error);
         res.status(500).json({ error: 'Error al devolver venta a pedidos', detalle: error.message });
+    } finally {
+        client.release();
     }
 });
 
