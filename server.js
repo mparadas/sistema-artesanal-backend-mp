@@ -1712,11 +1712,27 @@ app.put('/api/ventas/:id/devolver-a-pedidos', async (req, res) => {
             motivo_devolucion || 'Devuelta desde ventas'
         ]);
         
-        // 3. Eliminar detalles de la venta
-        await client.query('DELETE FROM venta_detalles WHERE venta_id = $1', [id]);
+        // 3. Anular la venta (mantener registro con montos en cero)
+        await client.query(`
+            UPDATE ventas SET 
+                total = 0, 
+                monto_pagado = 0, 
+                saldo_pendiente = 0,
+                estado_pago = 'anulada',
+                motivo_anulacion = $1,
+                fecha_anulacion = $2,
+                origen_venta_id = $3,
+                actualizado_en = NOW()
+            WHERE id = $4
+        `, [
+            'Devuelta a pedidos',
+            fecha_devolucion || new Date().toISOString(),
+            nuevoPedido.rows[0].id,
+            id
+        ]);
         
-        // 4. Eliminar la venta
-        await client.query('DELETE FROM ventas WHERE id = $1', [id]);
+        // 4. Eliminar detalles de la venta (opcional, para limpiar)
+        await client.query('DELETE FROM venta_detalles WHERE venta_id = $1', [id]);
         
         // Registrar auditoría
         await registrarAuditoria({
@@ -1732,7 +1748,13 @@ app.put('/api/ventas/:id/devolver-a-pedidos', async (req, res) => {
         res.json({ 
             mensaje: 'Venta devuelta a pedidos correctamente', 
             pedido: nuevoPedido.rows[0],
-            ventaEliminada: id
+            ventaAnulada: {
+                id: id,
+                estado: 'anulada',
+                total: 0,
+                monto_pagado: 0,
+                saldo_pendiente: 0
+            }
         });
     } catch (error) {
         await client.query('ROLLBACK');
