@@ -1,12 +1,5 @@
-const { Pool } = require('pg');
-
-const pool = new Pool({
-  user: 'postgres',
-  host: 'localhost',
-  database: 'inventario_artesanal',
-  password: 'MAP24',
-  port: 5432
-});
+const db = require('./config/database');
+const pool = db.pool;
 
 async function getUsuarios() {
   try {
@@ -22,9 +15,9 @@ async function getUsuarios() {
       console.log('---');
     });
     
-    console.log('\n=== CLAVES POR DEFECTO ===');
+    console.log('\n=== CREDENCIALES ADMIN ===');
     console.log('Usuario: admin');
-    console.log('Contraseña: admin123 (o la que esté en variable de entorno ADMIN_PASS)');
+    console.log('Contraseña: definida por ADMIN_PASS');
     
   } catch (error) {
     console.error('Error:', error);

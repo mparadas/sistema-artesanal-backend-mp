@@ -6,14 +6,15 @@ const jwt = require('jsonwebtoken');
 
 const app = express();
 const PORT = 3000;
+const JWT_SECRET = process.env.JWT_SECRET || 'dev_only_secret_change_me';
 
 // Database connection
 const pool = new Pool({
-  user: 'postgres',
-  host: 'localhost',
-  database: 'inventario_artesanal',
-  password: 'MAP24',
-  port: 5432
+  user: process.env.DB_USER || 'postgres',
+  host: process.env.DB_HOST || 'localhost',
+  database: process.env.DB_NAME || 'inventario_artesanal',
+  password: process.env.DB_PASSWORD || '',
+  port: parseInt(process.env.DB_PORT || '5432', 10)
 });
 
 // Middleware
@@ -55,7 +56,7 @@ app.post('/api/auth/login', async (req, res) => {
 
     const token = jwt.sign(
       { id: user.id, rol: user.rol, usuario: user.usuario }, 
-      'dev_jwt_secret_change_me', 
+      JWT_SECRET, 
       { expiresIn: '8h' }
     );
 

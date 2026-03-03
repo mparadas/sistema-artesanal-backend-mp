@@ -1,4 +1,5 @@
 const db = require('../config/database');
+const ADMIN_PASS_SEED = process.env.ADMIN_PASS || 'cambiar_inmediatamente';
 
 const initSQL = `
 -- ============================================
@@ -220,7 +221,7 @@ INSERT INTO receta_ingredientes (receta_id, ingrediente_id, cantidad) VALUES
 
 -- Usuarios por defecto (passwords se recomienda cambiar en entorno)
 INSERT INTO usuarios (nombre, usuario, password, rol) VALUES
-('Administrador','admin','admin123','admin');
+('Administrador','admin','${ADMIN_PASS_SEED}','admin');
 
 -- Pedidos de ejemplo que reflejan la UI
 INSERT INTO pedidos (cliente_id, cliente_nombre, total_estimado, notas, fecha_entrega, estado, monto_pagado, saldo_pendiente) VALUES

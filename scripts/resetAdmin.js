@@ -1,12 +1,5 @@
-const { Pool } = require('pg');
-
-const pool = new Pool({
-  host: 'localhost',
-  port: 5432,
-  database: 'inventario_artesanal',
-  user: 'postgres',
-  password: 'MAP24'
-});
+const db = require('../config/database');
+const pool = db.pool;
 
 async function resetAdminUser() {
   const client = await pool.connect();
@@ -30,13 +23,13 @@ async function resetAdminUser() {
       INSERT INTO usuarios (nombre, usuario, password, rol) 
       VALUES ($1, $2, $3, $4) 
       RETURNING id, usuario, rol
-    `, ['Administrador', 'admin', 'admin123', 'admin']);
+    `, ['Administrador', 'admin', process.env.ADMIN_PASS || 'cambiar_inmediatamente', 'admin']);
     
     console.log('✅ Nuevo usuario admin creado:', insertResult.rows[0]);
     
     console.log('\n🔑 Credenciales de acceso:');
     console.log('   Usuario: admin');
-    console.log('   Contraseña: admin123');
+    console.log(`   Contraseña: ${process.env.ADMIN_PASS || 'cambiar_inmediatamente'}`);
     console.log('   Rol: admin');
     
   } catch (error) {
