@@ -3510,6 +3510,164 @@ function obtenerFechaVenezuelaISO(fecha = getVenezuelaNow()) {
     return fecha.toISOString().split('T')[0];
 }
 
+function normalizarFechaTasaInput(rawFecha) {
+    const value = String(rawFecha || '').trim();
+    if (!value) return null;
+
+    // Caso ISO o formato con hora: YYYY-MM-DDTHH:mm:ss...
+    if (/^\d{4}-\d{2}-\d{2}/.test(value)) {
+        return value.slice(0, 10);
+    }
+
+    // Caso DD/MM/YY o DD/MM/YYYY
+    const slash = value.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/);
+    if (slash) {
+        const day = slash[1].padStart(2, '0');
+        const month = slash[2].padStart(2, '0');
+        const yearRaw = slash[3];
+        const year = yearRaw.length === 2 ? `20${yearRaw}` : yearRaw;
+        return `${year}-${month}-${day}`;
+    }
+
+    return null;
+}
+
+async function ejecutarActualizacionTasaDiaria({ forzarHorario = false, ipAddress = 'sistema', userAgent = 'scheduler' } = {}) {
+    const ahoraVzla = getVenezuelaNow();
+    const diaSemana = ahoraVzla.getDay(); // 0 domingo, 6 sábado
+    const minutosActuales = (ahoraVzla.getHours() * 60) + ahoraVzla.getMinutes();
+    const minutosCorte = (14 * 60) + 30; // 2:30 PM
+    const esDiaHabil = diaSemana >= 1 && diaSemana <= 5;
+    const enHorarioPermitido = esDiaHabil && minutosActuales >= minutosCorte;
+    const fechaHoyVzla = obtenerFechaVenezuelaISO(ahoraVzla);
+    const horaActualVzla = `${ahoraVzla.getHours().toString().padStart(2, '0')}:${ahoraVzla.getMinutes().toString().padStart(2, '0')}`;
+
+    if (!forzarHorario && !enHorarioPermitido) {
+        const actual = await db.query(
+            'SELECT * FROM tasas_cambio WHERE activa = true ORDER BY fecha DESC, id DESC LIMIT 1'
+        );
+
+        return {
+            statusCode: 200,
+            payload: {
+                mensaje: 'Consulta omitida: la corrida automática es de lunes a viernes desde las 2:30 PM (hora Venezuela)',
+                accion: 'omitida_horario',
+                horario: {
+                    hora_actual: horaActualVzla,
+                    fecha_actual: fechaHoyVzla,
+                    dia_semana: diaSemana,
+                    regla: 'Lunes a viernes desde 14:30'
+                },
+                tasa_actual: actual.rows[0] ? {
+                    tasa: parseFloat(actual.rows[0].tasa_bcv),
+                    fecha: actual.rows[0].fecha,
+                    fuente: actual.rows[0].fuente
+                } : null
+            }
+        };
+    }
+
+    const { obtenerTasaDiaria } = require('./services/tasa_bcv_service');
+    const { registrarTasaDiariaAutomatica } = require('./utils/tasa_cambio_diaria');
+    const tasaData = await obtenerTasaDiaria();
+
+    const fechaHoy = fechaHoyVzla;
+    const nuevaTasa = parseFloat(tasaData.tasa);
+    if (!Number.isFinite(nuevaTasa) || nuevaTasa <= 0) {
+        return {
+            statusCode: 400,
+            payload: {
+                error: 'La tasa consultada no es válida',
+                accion: 'tasa_invalida'
+            }
+        };
+    }
+
+    // Regla explícita: misma fecha + mismo monto => no insertar/actualizar
+    const duplicadoMismaFechaMonto = await db.query(
+        `SELECT id, fecha, tasa_bcv
+         FROM tasas_cambio
+         WHERE fecha = $1
+           AND ABS(CAST(tasa_bcv AS NUMERIC) - $2::NUMERIC) < 0.0001
+         ORDER BY id DESC
+         LIMIT 1`,
+        [fechaHoy, nuevaTasa]
+    );
+    if (duplicadoMismaFechaMonto.rows.length > 0) {
+        return {
+            statusCode: 200,
+            payload: {
+                mensaje: 'La tasa consultada ya existe para la misma fecha. No se insertó registro.',
+                tasa: nuevaTasa,
+                fuente: tasaData.fuente,
+                fecha: fechaHoy,
+                accion: 'sin_cambios'
+            }
+        };
+    }
+
+    const existente = await db.query(
+        'SELECT id, tasa_bcv FROM tasas_cambio WHERE fecha = $1',
+        [fechaHoy]
+    );
+
+    if (existente.rows.length > 0) {
+        const tasaActual = parseFloat(existente.rows[0].tasa_bcv);
+        const mismaTasa = Number.isFinite(tasaActual) && Math.abs(tasaActual - nuevaTasa) < 0.0001;
+
+        if (mismaTasa) {
+            return {
+                statusCode: 200,
+                payload: {
+                    mensaje: 'La tasa consultada es igual a la registrada. No se realizaron cambios.',
+                    tasa: nuevaTasa,
+                    fuente: tasaData.fuente,
+                    fecha: fechaHoy,
+                    accion: 'sin_cambios'
+                }
+            };
+        }
+
+        // Mantener una sola tasa activa: desactivar las demás
+        await db.query('UPDATE tasas_cambio SET activa = false WHERE activa = true AND fecha <> $1', [fechaHoy]);
+        await db.query(
+            'UPDATE tasas_cambio SET tasa_bcv = $1, fuente = $2, activa = true, actualizado_en = NOW() WHERE fecha = $3',
+            [nuevaTasa, tasaData.fuente, fechaHoy]
+        );
+        await registrarTasaDiariaAutomatica(nuevaTasa, 'auto_bcv', ipAddress, userAgent);
+
+        return {
+            statusCode: 200,
+            payload: {
+                mensaje: 'Tasa actualizada correctamente',
+                tasa: nuevaTasa,
+                fuente: tasaData.fuente,
+                fecha: fechaHoy,
+                accion: 'actualizada'
+            }
+        };
+    }
+
+    // Mantener una sola tasa activa: desactivar las anteriores
+    await db.query('UPDATE tasas_cambio SET activa = false WHERE activa = true');
+    await db.query(
+        'INSERT INTO tasas_cambio (fecha, tasa_bcv, fuente, activa) VALUES ($1, $2, $3, true)',
+        [fechaHoy, nuevaTasa, tasaData.fuente]
+    );
+    await registrarTasaDiariaAutomatica(nuevaTasa, 'auto_bcv', ipAddress, userAgent);
+
+    return {
+        statusCode: 200,
+        payload: {
+            mensaje: 'Tasa insertada correctamente',
+            tasa: nuevaTasa,
+            fuente: tasaData.fuente,
+            fecha: fechaHoy,
+            accion: 'insertada'
+        }
+    };
+}
+
 // Obtener tasa de cambio actual (con lógica de horario del BCV)
 app.get('/api/tasas-cambio/actual', async (req, res) => {
     try {
@@ -3702,25 +3860,26 @@ app.post('/api/tasas-cambio', async (req, res) => {
         const { fecha, tasa_bcv, fuente } = req.body;
         const ip_address = req.ip;
         const user_agent = req.get('User-Agent');
+        const fechaNormalizada = normalizarFechaTasaInput(fecha);
         
-        if (!fecha || !tasa_bcv) {
+        if (!fechaNormalizada || !tasa_bcv) {
             return res.status(400).json({ error: 'Fecha y tasa son requeridos' });
         }
         
         // Verificar si ya existe una tasa para esa fecha
         const existente = await db.query(
-            'SELECT id FROM tasas_cambio WHERE fecha = $1',
-            [fecha]
+            'SELECT id FROM tasas_cambio WHERE DATE(fecha) = DATE($1)',
+            [fechaNormalizada]
         );
         
         if (existente.rows.length > 0) {
             // Mantener una sola tasa activa: desactivar las demás
-            await db.query('UPDATE tasas_cambio SET activa = false WHERE activa = true AND fecha <> $1', [fecha]);
+            await db.query('UPDATE tasas_cambio SET activa = false WHERE activa = true AND DATE(fecha) <> DATE($1)', [fechaNormalizada]);
 
             // Actualizar tasa existente
             await db.query(
-                'UPDATE tasas_cambio SET tasa_bcv = $1, fuente = $2, activa = true, actualizado_en = NOW() WHERE fecha = $3',
-                [tasa_bcv, fuente || 'BCV', fecha]
+                'UPDATE tasas_cambio SET tasa_bcv = $1, fuente = $2, activa = true, actualizado_en = NOW() WHERE DATE(fecha) = DATE($3)',
+                [tasa_bcv, fuente || 'BCV', fechaNormalizada]
             );
             
             // También actualizar en la tabla diaria
@@ -3735,7 +3894,7 @@ app.post('/api/tasas-cambio', async (req, res) => {
             // Crear nueva tasa
             await db.query(
                 'INSERT INTO tasas_cambio (fecha, tasa_bcv, fuente, activa) VALUES ($1, $2, $3, true)',
-                [fecha, tasa_bcv, fuente || 'BCV']
+                [fechaNormalizada, tasa_bcv, fuente || 'BCV']
             );
             
             // También registrar en la tabla diaria
@@ -3771,126 +3930,12 @@ app.delete('/api/tasas-cambio/:id', async (req, res) => {
 // Actualizar tasa diaria automáticamente
 app.post('/api/tasas-cambio/actualizar-diaria', async (req, res) => {
     try {
-        const ahoraVzla = getVenezuelaNow();
-        const diaSemana = ahoraVzla.getDay(); // 0 domingo, 6 sábado
-        const minutosActuales = (ahoraVzla.getHours() * 60) + ahoraVzla.getMinutes();
-        const minutosCorte = (14 * 60) + 30; // 2:30 PM
-        const esDiaHabil = diaSemana >= 1 && diaSemana <= 5;
-        const enHorarioPermitido = esDiaHabil && minutosActuales >= minutosCorte;
-        const fechaHoyVzla = obtenerFechaVenezuelaISO(ahoraVzla);
-        const horaActualVzla = `${ahoraVzla.getHours().toString().padStart(2, '0')}:${ahoraVzla.getMinutes().toString().padStart(2, '0')}`;
-
-        if (!enHorarioPermitido) {
-            const actual = await db.query(
-                'SELECT * FROM tasas_cambio WHERE activa = true ORDER BY fecha DESC, id DESC LIMIT 1'
-            );
-
-            return res.json({
-                mensaje: 'Consulta omitida: la corrida automática es de lunes a viernes desde las 2:30 PM (hora Venezuela)',
-                accion: 'omitida_horario',
-                horario: {
-                    hora_actual: horaActualVzla,
-                    fecha_actual: fechaHoyVzla,
-                    dia_semana: diaSemana,
-                    regla: 'Lunes a viernes desde 14:30'
-                },
-                tasa_actual: actual.rows[0] ? {
-                    tasa: parseFloat(actual.rows[0].tasa_bcv),
-                    fecha: actual.rows[0].fecha,
-                    fuente: actual.rows[0].fuente
-                } : null
-            });
-        }
-
-        const { obtenerTasaDiaria } = require('./services/tasa_bcv_service');
-        const { registrarTasaDiariaAutomatica } = require('./utils/tasa_cambio_diaria');
-        
-        console.log('🔄 Actualizando tasa diaria desde API...');
-        const tasaData = await obtenerTasaDiaria();
-
-        const fechaHoy = fechaHoyVzla;
-        const nuevaTasa = parseFloat(tasaData.tasa);
-        if (!Number.isFinite(nuevaTasa) || nuevaTasa <= 0) {
-            return res.status(400).json({
-                error: 'La tasa consultada no es válida',
-                accion: 'tasa_invalida'
-            });
-        }
-
-        // Regla explícita: misma fecha + mismo monto => no insertar/actualizar
-        const duplicadoMismaFechaMonto = await db.query(
-            `SELECT id, fecha, tasa_bcv
-             FROM tasas_cambio
-             WHERE fecha = $1
-               AND ABS(CAST(tasa_bcv AS NUMERIC) - $2::NUMERIC) < 0.0001
-             ORDER BY id DESC
-             LIMIT 1`,
-            [fechaHoy, nuevaTasa]
-        );
-        if (duplicadoMismaFechaMonto.rows.length > 0) {
-            return res.json({
-                mensaje: 'La tasa consultada ya existe para la misma fecha. No se insertó registro.',
-                tasa: nuevaTasa,
-                fuente: tasaData.fuente,
-                fecha: fechaHoy,
-                accion: 'sin_cambios'
-            });
-        }
-
-        const existente = await db.query(
-            'SELECT id, tasa_bcv FROM tasas_cambio WHERE fecha = $1',
-            [fechaHoy]
-        );
-        
-        if (existente.rows.length > 0) {
-            const tasaActual = parseFloat(existente.rows[0].tasa_bcv);
-            const mismaTasa = Number.isFinite(tasaActual) && Math.abs(tasaActual - nuevaTasa) < 0.0001;
-
-            if (mismaTasa) {
-                return res.json({
-                    mensaje: 'La tasa consultada es igual a la registrada. No se realizaron cambios.',
-                    tasa: nuevaTasa,
-                    fuente: tasaData.fuente,
-                    fecha: fechaHoy,
-                    accion: 'sin_cambios'
-                });
-            }
-
-            // Mantener una sola tasa activa: desactivar las demás
-            await db.query('UPDATE tasas_cambio SET activa = false WHERE activa = true AND fecha <> $1', [fechaHoy]);
-
-            await db.query(
-                'UPDATE tasas_cambio SET tasa_bcv = $1, fuente = $2, activa = true, actualizado_en = NOW() WHERE fecha = $3',
-                [nuevaTasa, tasaData.fuente, fechaHoy]
-            );
-            await registrarTasaDiariaAutomatica(nuevaTasa, 'auto_bcv', req.ip, req.get('User-Agent'));
-
-            res.json({ 
-                mensaje: 'Tasa actualizada correctamente',
-                tasa: nuevaTasa,
-                fuente: tasaData.fuente,
-                fecha: fechaHoy,
-                accion: 'actualizada'
-            });
-        } else {
-            // Mantener una sola tasa activa: desactivar las anteriores
-            await db.query('UPDATE tasas_cambio SET activa = false WHERE activa = true');
-
-            await db.query(
-                'INSERT INTO tasas_cambio (fecha, tasa_bcv, fuente, activa) VALUES ($1, $2, $3, true)',
-                [fechaHoy, nuevaTasa, tasaData.fuente]
-            );
-            await registrarTasaDiariaAutomatica(nuevaTasa, 'auto_bcv', req.ip, req.get('User-Agent'));
-
-            res.json({ 
-                mensaje: 'Tasa insertada correctamente',
-                tasa: nuevaTasa,
-                fuente: tasaData.fuente,
-                fecha: fechaHoy,
-                accion: 'insertada'
-            });
-        }
-        
+        const result = await ejecutarActualizacionTasaDiaria({
+            forzarHorario: false,
+            ipAddress: req.ip,
+            userAgent: req.get('User-Agent')
+        });
+        return res.status(result.statusCode).json(result.payload);
     } catch (error) {
         console.error('Error actualizando tasa diaria:', error);
         res.status(500).json({ 
@@ -4618,10 +4663,47 @@ app.get('/api/health', (req, res) => {
     });
 });
 
+let ultimaEjecucionAutoTasaFecha = null;
+const INTERVALO_AUTO_TASA_MS = 60 * 1000; // revisar cada minuto
+const HORA_OBJETIVO_AUTO_TASA_MIN = (14 * 60) + 30; // 2:30 PM Venezuela
+
+const iniciarProgramadorTasaDiaria = () => {
+    const tick = async () => {
+        try {
+            const ahoraVzla = getVenezuelaNow();
+            const diaSemana = ahoraVzla.getDay();
+            const fechaHoyVzla = obtenerFechaVenezuelaISO(ahoraVzla);
+            const minutosActuales = (ahoraVzla.getHours() * 60) + ahoraVzla.getMinutes();
+            const esDiaHabil = diaSemana >= 1 && diaSemana <= 5;
+            const yaEsHora = minutosActuales >= HORA_OBJETIVO_AUTO_TASA_MIN;
+
+            if (!esDiaHabil || !yaEsHora) return;
+            if (ultimaEjecucionAutoTasaFecha === fechaHoyVzla) return;
+
+            const result = await ejecutarActualizacionTasaDiaria({
+                forzarHorario: true,
+                ipAddress: 'scheduler',
+                userAgent: 'scheduler:auto-14:30'
+            });
+
+            ultimaEjecucionAutoTasaFecha = fechaHoyVzla;
+            console.log(`⏰ Auto tasa 14:30 (${fechaHoyVzla}):`, result.payload?.accion || result.payload?.mensaje || 'ok');
+        } catch (error) {
+            console.error('❌ Error en programador automático de tasa:', error.message);
+        }
+    };
+
+    // Arranque inmediato por si el servicio reinicia después de las 2:30 PM.
+    setTimeout(tick, 8000);
+    setInterval(tick, INTERVALO_AUTO_TASA_MS);
+    console.log('🕒 Programador de tasa diaria activado (L-V desde 14:30, hora Venezuela)');
+};
+
 initDb().then(() => {
     app.listen(PORT, '0.0.0.0', () => {
         console.log(`✅ Servidor corriendo en http://localhost:${PORT}`);
         console.log(`🌐 Servidor accesible en red: http://192.168.100.224:${PORT}`);
         console.log(`📱 Móvil puede conectar a: http://192.168.100.224:${PORT}`);
+        iniciarProgramadorTasaDiaria();
     });
 });
