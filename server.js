@@ -2730,7 +2730,9 @@ app.post('/api/pedidos/:id/test-despachar', async (req, res) => {
 // DESPACHAR PEDIDO (crear venta automáticamente) - Versión final robusta
 app.post('/api/pedidos/:id/despachar', async (req, res) => {
     const { id } = req.params;
-    const { items_despachados } = req.body;
+    const { items_despachados, tipo_venta, metodo_pago } = req.body;
+    const tipoVentaNormalizado = String(tipo_venta || '').toLowerCase() === 'credito' ? 'credito' : 'inmediato';
+    const metodoPagoNormalizado = tipoVentaNormalizado === 'credito' ? null : (metodo_pago || 'efectivo');
     
     console.log('🚀 DESPACHAR PEDIDO (versión final):', { id, items_despachados });
     
@@ -2802,8 +2804,8 @@ app.post('/api/pedidos/:id/despachar', async (req, res) => {
                 pedidoInfo?.cliente_nombre || 'Cliente Desconocido', 
                 total, 
                 'USD', 
-                'inmediato', 
-                'efectivo', 
+                tipoVentaNormalizado, 
+                metodoPagoNormalizado, 
                 'pendiente', 
                 0, 
                 total
