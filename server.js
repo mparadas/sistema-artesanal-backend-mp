@@ -295,8 +295,9 @@ app.get('/api/public/catalogo', publicRateLimit, async (req, res) => {
     }
 });
 
-app.post('/api/productos', async (req, res) => {
+app.post('/api/productos', authenticateToken, async (req, res) => {
     try {
+        if (!req.user || req.user.rol !== 'admin') return res.status(403).json({ error: 'Permiso denegado' });
         const {
             nombre, categoria, precio, stock, stock_minimo, unidad, descripcion,
             tipo_producto, animal_origen, cantidad_piezas, peso_total, precio_canal, imagen_url
@@ -359,8 +360,9 @@ app.post('/api/productos', async (req, res) => {
     }
 });
 
-app.put('/api/productos/:id', async (req, res) => {
+app.put('/api/productos/:id', authenticateToken, async (req, res) => {
     try {
+        if (!req.user || req.user.rol !== 'admin') return res.status(403).json({ error: 'Permiso denegado' });
         const { id } = req.params;
         const {
             nombre, categoria, precio, stock, stock_minimo, unidad, descripcion,
@@ -433,8 +435,9 @@ app.put('/api/productos/:id', async (req, res) => {
     }
 });
 
-app.delete('/api/productos/:id', async (req, res) => {
+app.delete('/api/productos/:id', authenticateToken, async (req, res) => {
     try {
+        if (!req.user || req.user.rol !== 'admin') return res.status(403).json({ error: 'Permiso denegado' });
         const { id } = req.params;
         
         // Obtener datos antes de eliminar
@@ -465,8 +468,9 @@ app.delete('/api/productos/:id', async (req, res) => {
     }
 });
 
-app.post('/api/productos/:id/incrementar-corte', async (req, res) => {
+app.post('/api/productos/:id/incrementar-corte', authenticateToken, async (req, res) => {
     try {
+        if (!req.user || req.user.rol !== 'admin') return res.status(403).json({ error: 'Permiso denegado' });
         const { id } = req.params;
         const piezas = parseInt(req.body?.piezas || 0, 10) || 0;
         const pesoKg = parseFloat(req.body?.peso_kg || 0) || 0;
@@ -495,8 +499,9 @@ app.post('/api/productos/:id/incrementar-corte', async (req, res) => {
     }
 });
 
-app.post('/api/productos/:id/agregar-existencia', async (req, res) => {
+app.post('/api/productos/:id/agregar-existencia', authenticateToken, async (req, res) => {
     try {
+        if (!req.user || req.user.rol !== 'admin') return res.status(403).json({ error: 'Permiso denegado' });
         const { id } = req.params;
         const cantidad = parseFloat(req.body?.cantidad || 0) || 0;
         const piezas = parseInt(req.body?.piezas || 0, 10) || 0;
@@ -653,6 +658,21 @@ app.get('/api/productos/mantenimiento/historial', authenticateToken, async (req,
 // INGREDIENTES
 // ============================================
 
+const normalizarUnidadProduccion = (unidad) => String(unidad || '').toLowerCase().trim();
+
+const convertirKgAUnidad = (kg, unidad) => {
+    const baseKg = Number(kg) || 0;
+    const u = normalizarUnidadProduccion(unidad);
+    if (['gr', 'g', 'gramo', 'gramos'].includes(u)) return baseKg * 1000;
+    if (['kg', 'kilo', 'kilos'].includes(u)) return baseKg;
+    if (['ml'].includes(u)) return baseKg * 1000; // densidad asumida 1kg/L
+    if (['lt', 'l', 'litro', 'litros'].includes(u)) return baseKg;
+    // Para unidades no convertibles con certeza, se usa valor base.
+    return baseKg;
+};
+
+const redondear3 = (n) => Number((Number(n) || 0).toFixed(3));
+
 app.get('/api/ingredientes', async (req, res) => {
     try {
         const result = await db.query('SELECT * FROM ingredientes ORDER BY nombre');
@@ -662,8 +682,9 @@ app.get('/api/ingredientes', async (req, res) => {
     }
 });
 
-app.post('/api/ingredientes', async (req, res) => {
+app.post('/api/ingredientes', authenticateToken, async (req, res) => {
     try {
+        if (!req.user || req.user.rol !== 'admin') return res.status(403).json({ error: 'Permiso denegado' });
         const { nombre, categoria, unidad, stock, stock_minimo, costo } = req.body;
         
         const nuevoIngrediente = {
@@ -702,8 +723,9 @@ app.post('/api/ingredientes', async (req, res) => {
     }
 });
 
-app.put('/api/ingredientes/:id', async (req, res) => {
+app.put('/api/ingredientes/:id', authenticateToken, async (req, res) => {
     try {
+        if (!req.user || req.user.rol !== 'admin') return res.status(403).json({ error: 'Permiso denegado' });
         const { id } = req.params;
         const { nombre, categoria, unidad, stock, stock_minimo, costo } = req.body;
         const result = await db.query(
@@ -725,8 +747,9 @@ app.put('/api/ingredientes/:id', async (req, res) => {
     }
 });
 
-app.delete('/api/ingredientes/:id', async (req, res) => {
+app.delete('/api/ingredientes/:id', authenticateToken, async (req, res) => {
     try {
+        if (!req.user || req.user.rol !== 'admin') return res.status(403).json({ error: 'Permiso denegado' });
         const { id } = req.params;
         const enUso = await db.query('SELECT 1 FROM receta_ingredientes WHERE ingrediente_id = $1 LIMIT 1', [id]);
         if (enUso.rows.length > 0) return res.status(400).json({ error: 'No se puede eliminar: está en uso en recetas' });
@@ -758,11 +781,26 @@ app.get('/api/recetas', async (req, res) => {
                 JOIN ingredientes i ON ri.ingrediente_id = i.id
                 WHERE ri.receta_id = $1
             `, [receta.id]);
-            const ingredientes = ingResult.rows.map(ing => ({ ...ing, suficiente: ing.stock_disponible >= ing.cantidad }));
+            const rendimientoBase = Math.max(Number(receta.rendimiento) || 1, 0.0001);
+            const ingredientes = ingResult.rows.map((ing) => {
+                const porcentaje = Number(ing.cantidad) || 0;
+                const kgNecesarios = (porcentaje / 100) * rendimientoBase;
+                const cantidadNecesaria = convertirKgAUnidad(kgNecesarios, ing.unidad);
+                const stockDisponible = Number(ing.stock_disponible) || 0;
+                return {
+                    ...ing,
+                    cantidad_necesaria: redondear3(cantidadNecesaria),
+                    suficiente: stockDisponible >= cantidadNecesaria
+                };
+            });
             const puedeProducir = ingredientes.every(i => i.suficiente);
             let lotesPosibles = 0;
             if (puedeProducir && ingredientes.length > 0) {
-                lotesPosibles = Math.floor(Math.min(...ingredientes.map(i => i.stock_disponible / i.cantidad)));
+                lotesPosibles = Math.floor(Math.min(...ingredientes.map((i) => {
+                    const requerido = Number(i.cantidad_necesaria) || 0;
+                    if (requerido <= 0) return 0;
+                    return (Number(i.stock_disponible) || 0) / requerido;
+                })));
             }
             recetas.push({ ...receta, ingredientes, puede_producir: puedeProducir, lotes_posibles: lotesPosibles });
         }
@@ -772,42 +810,15 @@ app.get('/api/recetas', async (req, res) => {
     }
 });
 
-app.post('/api/recetas', async (req, res) => {
+app.post('/api/recetas', authenticateToken, async (req, res) => {
     const client = await db.pool.connect();
     try {
-        console.log('🔍 Iniciando creación de receta con datos:', req.body);
+        if (!req.user || req.user.rol !== 'admin') return res.status(403).json({ error: 'Permiso denegado' });
         await client.query('BEGIN');
         const { nombre, productoId, rendimiento, ingredientes } = req.body;
-        
-        console.log('📋 Datos recibidos:', { nombre, productoId, rendimiento, cantidadIngredientes: ingredientes?.length });
-        
-        // Verificar que tengamos suficiente stock de todos los ingredientes
-        for (const ing of ingredientes) {
-            console.log(`🔍 Verificando ingrediente ID: ${ing.ingredienteId}, cantidad requerida: ${ing.cantidad}`);
-            
-            const stockResult = await client.query(
-                'SELECT stock, nombre FROM ingredientes WHERE id = $1',
-                [ing.ingredienteId]
-            );
-            
-            if (stockResult.rows.length === 0) {
-                await client.query('ROLLBACK');
-                return res.status(400).json({ 
-                    error: `Ingrediente con ID ${ing.ingredienteId} no encontrado` 
-                });
-            }
-            
-            const stockActual = parseFloat(stockResult.rows[0].stock) || 0;
-            const cantidadRequerida = parseFloat(ing.cantidad) || 0;
-            
-            console.log(`📊 Stock actual de ${stockResult.rows[0].nombre}: ${stockActual}, requerido: ${cantidadRequerida}`);
-            
-            if (stockActual < cantidadRequerida) {
-                await client.query('ROLLBACK');
-                return res.status(400).json({ 
-                    error: `Stock insuficiente para ${stockResult.rows[0].nombre}. Stock actual: ${stockActual}, Requerido: ${cantidadRequerida}` 
-                });
-            }
+        if (!nombre || !Array.isArray(ingredientes) || ingredientes.length === 0) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ error: 'Nombre e ingredientes son requeridos' });
         }
         
         // Determinar si es una categoría o un producto específico
@@ -816,19 +827,11 @@ app.post('/api/recetas', async (req, res) => {
         
         if (isNaN(productoId)) {
             // Es una categoría (string)
-            console.log(`🔍 Se seleccionó categoría: ${productoId}`);
-            
-            // Primero, veamos todos los productos disponibles para depuración
-            const todosLosProductos = await client.query('SELECT id, nombre, categoria, stock FROM productos ORDER BY categoria, nombre');
-            console.log('📋 Todos los productos en la base de datos:', todosLosProductos.rows);
-            
-            // Buscar un producto de esa categoría (preferiblemente con stock)
+            // Buscar un producto de esa categoría
             const productoDeCategoria = await client.query(
                 'SELECT id, nombre FROM productos WHERE categoria = $1 ORDER BY stock DESC LIMIT 1',
                 [productoId]
             );
-            
-            console.log(`🔍 Búsqueda de productos en categoría "${productoId}":`, productoDeCategoria.rows);
             
             if (productoDeCategoria.rows.length === 0) {
                 await client.query('ROLLBACK');
@@ -839,12 +842,9 @@ app.post('/api/recetas', async (req, res) => {
             
             productoFinalId = productoDeCategoria.rows[0].id;
             productoNombre = productoDeCategoria.rows[0].nombre;
-            console.log(`📦 Se usará producto de categoría: ${productoNombre} (ID: ${productoFinalId})`);
         } else {
             // Es un producto específico (ID numérico)
             productoFinalId = parseInt(productoId);
-            console.log(`🔍 Se seleccionó producto específico con ID: ${productoFinalId}`);
-            
             // Verificar que el producto exista
             const productoExistente = await client.query(
                 'SELECT nombre FROM productos WHERE id = $1',
@@ -859,87 +859,48 @@ app.post('/api/recetas', async (req, res) => {
             }
             
             productoNombre = productoExistente.rows[0].nombre;
-            console.log(`📦 Producto específico: ${productoNombre}`);
         }
-        
-        // Crear la receta con el ID del producto final
-        console.log('📝 Creando receta...');
+
+        // Crear la receta con el ID del producto final (no mueve inventario)
         const recetaResult = await client.query(
             `INSERT INTO recetas (nombre, producto_id, rendimiento) VALUES ($1,$2,$3) RETURNING *`,
             [nombre, productoFinalId, rendimiento || 1]
         );
         const recetaId = recetaResult.rows[0].id;
-        console.log('✅ Receta creada con ID:', recetaId);
-        
-        // Insertar ingredientes de la receta y descontar stock
+
+        // Insertar ingredientes de la receta
         for (const ing of ingredientes) {
-            console.log(`📦 Procesando ingrediente: ${ing.ingredienteId}, cantidad: ${ing.cantidad}`);
-            
-            // Insertar relación de receta-ingrediente
+            const ingredienteId = Number(ing.ingredienteId);
+            const cantidadIng = Number(ing.cantidad);
+            if (!Number.isInteger(ingredienteId) || ingredienteId <= 0 || !Number.isFinite(cantidadIng) || cantidadIng <= 0) {
+                await client.query('ROLLBACK');
+                return res.status(400).json({ error: 'Ingredientes inválidos en la receta' });
+            }
             await client.query(
                 `INSERT INTO receta_ingredientes (receta_id, ingrediente_id, cantidad) VALUES ($1,$2,$3)`,
-                [recetaId, ing.ingredienteId, ing.cantidad]
+                [recetaId, ingredienteId, cantidadIng]
             );
-            console.log('✅ Relación receta-ingrediente insertada');
-            
-            // Descontar stock del ingrediente
-            const cantidadRequerida = parseFloat(ing.cantidad) || 0;
-            console.log(`🔽 Descontando ${cantidadRequerida} del ingrediente ${ing.ingredienteId}`);
-            
-            await client.query(
-                'UPDATE ingredientes SET stock = stock - $1, actualizado_en = NOW() WHERE id = $2',
-                [cantidadRequerida, ing.ingredienteId]
-            );
-            console.log('✅ Stock de ingrediente actualizado');
-            
-            // Verificar stock después de descontar
-            const stockVerificacion = await client.query(
-                'SELECT stock, nombre FROM ingredientes WHERE id = $1',
-                [ing.ingredienteId]
-            );
-            console.log(`📦 Stock actualizado para ${stockVerificacion.rows[0].nombre}: ${stockVerificacion.rows[0].stock}`);
         }
-        
-        // Aumentar stock del producto final según el rendimiento
-        if (productoFinalId && rendimiento) {
-            const rendimientoNumerico = parseFloat(rendimiento) || 0;
-            console.log(`📈 Aumentando stock del producto ${productoNombre} (ID: ${productoFinalId}) en ${rendimientoNumerico} unidades`);
-            
-            await client.query(
-                'UPDATE productos SET stock = stock + $1, actualizado_en = NOW() WHERE id = $2',
-                [rendimientoNumerico, productoFinalId]
-            );
-            console.log('✅ Stock de producto actualizado');
-            
-            // Verificar stock del producto después de aumentar
-            const stockProducto = await client.query(
-                'SELECT stock, nombre FROM productos WHERE id = $1',
-                [productoFinalId]
-            );
-            console.log(`📦 Stock actualizado para producto ${stockProducto.rows[0].nombre}: ${stockProducto.rows[0].stock}`);
-        }
-        
+
         await client.query('COMMIT');
-        console.log('✅ Transacción confirmada');
-        
         res.status(201).json({ 
             ...recetaResult.rows[0], 
             ingredientes,
-            mensaje: 'Receta creada y stock de ingredientes descontado correctamente'
+            producto_nombre: productoNombre,
+            mensaje: 'Receta creada correctamente'
         });
     } catch (error) {
         await client.query('ROLLBACK');
-        console.error('❌ Error al crear receta:', error);
-        console.error('❌ Stack trace:', error.stack);
         res.status(500).json({ error: 'Error al crear receta', detalle: error.message });
     } finally {
         client.release();
     }
 });
 
-app.put('/api/recetas/:id', async (req, res) => {
+app.put('/api/recetas/:id', authenticateToken, async (req, res) => {
     const client = await db.pool.connect();
     try {
+        if (!req.user || req.user.rol !== 'admin') return res.status(403).json({ error: 'Permiso denegado' });
         await client.query('BEGIN');
         const { id } = req.params;
         const { nombre, productoId, rendimiento, ingredientes } = req.body;
@@ -974,8 +935,9 @@ app.put('/api/recetas/:id', async (req, res) => {
     }
 });
 
-app.delete('/api/recetas/:id', async (req, res) => {
+app.delete('/api/recetas/:id', authenticateToken, async (req, res) => {
     try {
+        if (!req.user || req.user.rol !== 'admin') return res.status(403).json({ error: 'Permiso denegado' });
         const { id } = req.params;
         const result = await db.query('UPDATE recetas SET activa = FALSE WHERE id = $1 RETURNING *', [id]);
         if (result.rows.length === 0) return res.status(404).json({ error: 'Receta no encontrada' });
@@ -985,106 +947,181 @@ app.delete('/api/recetas/:id', async (req, res) => {
     }
 });
 
+const ejecutarProduccion = async (client, { recetaId, cantidadKg, usuario }) => {
+    const recetaResult = await client.query(
+        `SELECT r.*, p.nombre as producto_nombre, p.unidad as producto_unidad, p.categoria as producto_categoria
+         FROM recetas r
+         JOIN productos p ON r.producto_id = p.id
+         WHERE r.id = $1 AND r.activa = TRUE`,
+        [recetaId]
+    );
+    if (recetaResult.rows.length === 0) throw new Error('Receta no encontrada o inactiva');
+    const receta = recetaResult.rows[0];
+
+    const ingredientesResult = await client.query(
+        `SELECT ri.ingrediente_id, ri.cantidad as porcentaje, i.nombre as ingrediente_nombre, i.unidad as ingrediente_unidad, i.stock as stock_actual, i.costo
+         FROM receta_ingredientes ri
+         JOIN ingredientes i ON ri.ingrediente_id = i.id
+         WHERE ri.receta_id = $1`,
+        [recetaId]
+    );
+    if (ingredientesResult.rows.length === 0) throw new Error('La receta no tiene ingredientes definidos');
+
+    const rendimientoRecetaKg = Math.max(Number(receta.rendimiento) || 1, 0.0001);
+    const factorEscala = (Number(cantidadKg) || 0) / rendimientoRecetaKg;
+    if (!Number.isFinite(factorEscala) || factorEscala <= 0) throw new Error('Cantidad inválida para producir');
+
+    let costoTotalReceta = 0;
+    const detalleIngredientes = [];
+    const faltantes = [];
+    const capacidadesKg = [];
+    for (const ing of ingredientesResult.rows) {
+        const porcentaje = Number(ing.porcentaje) || 0;
+        const kgConsumidos = (porcentaje / 100) * Number(cantidadKg || 0);
+        const consumoUnidad = convertirKgAUnidad(kgConsumidos, ing.ingrediente_unidad);
+        const consumoUnidadPorKg = convertirKgAUnidad((porcentaje / 100), ing.ingrediente_unidad);
+        const stockActual = Number(ing.stock_actual) || 0;
+        if (consumoUnidadPorKg > 0) {
+            capacidadesKg.push(stockActual / consumoUnidadPorKg);
+        }
+        if (stockActual < consumoUnidad) {
+            faltantes.push({
+                nombre: ing.ingrediente_nombre,
+                unidad: ing.ingrediente_unidad || 'kg',
+                stockActual,
+                requerido: redondear3(consumoUnidad)
+            });
+        }
+        const costoUnitario = Number(ing.costo) || 0;
+        const costoTotal = consumoUnidad * costoUnitario;
+        costoTotalReceta += costoTotal;
+        detalleIngredientes.push({
+            ingrediente_id: ing.ingrediente_id,
+            ingrediente_nombre: ing.ingrediente_nombre,
+            ingrediente_unidad: ing.ingrediente_unidad,
+            porcentaje,
+            cantidad_consumida: redondear3(consumoUnidad),
+            costo_unitario: redondear3(costoUnitario),
+            costo_total: redondear3(costoTotal)
+        });
+    }
+    if (faltantes.length > 0) {
+        const maxKgPosibles = capacidadesKg.length > 0 ? Math.max(0, Math.min(...capacidadesKg)) : 0;
+        const detalleFaltantes = faltantes
+            .map((f) => `${f.nombre} (disp: ${redondear3(f.stockActual)} ${f.unidad}, req: ${f.requerido} ${f.unidad})`)
+            .join(', ');
+        throw new Error(`Stock insuficiente. Faltantes: ${detalleFaltantes}. Puedes producir hasta ${redondear3(maxKgPosibles)} kg con el stock actual.`);
+    }
+
+    // Bloqueo y descuento condicional para evitar carreras de stock.
+    for (const det of detalleIngredientes) {
+        const updateRes = await client.query(
+            `UPDATE ingredientes
+             SET stock = stock - $1, actualizado_en = NOW()
+             WHERE id = $2 AND stock >= $1
+             RETURNING id`,
+            [det.cantidad_consumida, det.ingrediente_id]
+        );
+        if (updateRes.rows.length === 0) {
+            throw new Error(`No se pudo descontar stock de ${det.ingrediente_nombre} por concurrencia. Intenta nuevamente.`);
+        }
+    }
+
+    let cantidadFinal = Number(cantidadKg) || 0;
+    let unidadFinal = receta.producto_unidad || 'kg';
+    let notasProduccion = `Producción: ${redondear3(cantidadKg)} ${unidadFinal} de ${receta.producto_nombre}`;
+    if (String(receta.producto_categoria || '').toLowerCase() === 'hamburguesas' || String(receta.producto_nombre || '').toLowerCase().includes('hamburguesa')) {
+        const pesoPorUnidad = 0.150;
+        cantidadFinal = Math.floor((Number(cantidadKg) || 0) / pesoPorUnidad);
+        unidadFinal = 'unidad';
+        notasProduccion = `Producción: ${redondear3(cantidadKg)} kg convertidos a ${cantidadFinal} unidades de 150gr de ${receta.producto_nombre}`;
+    }
+
+    await client.query(
+        `UPDATE productos SET stock = stock + $1, actualizado_en = NOW() WHERE id = $2`,
+        [cantidadFinal, receta.producto_id]
+    );
+    await normalizarProductoFinalPorId(client, receta.producto_id);
+
+    const lote = `LOT-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${String(recetaId).padStart(3, '0')}-${Date.now().toString().slice(-5)}`;
+    const prodInsert = await client.query(
+        `INSERT INTO produccion (
+            receta_id, cantidad_lotes, cantidad_producida, costo_total_receta, lote, usuario_proceso, fecha_elaboracion, unidad_producida, notas
+         ) VALUES ($1,$2,$3,$4,$5,$6,NOW(),$7,$8)
+         RETURNING *`,
+        [recetaId, 1, redondear3(cantidadFinal), redondear3(costoTotalReceta), lote, usuario || 'sistema', unidadFinal, notasProduccion]
+    );
+    const produccion = prodInsert.rows[0];
+
+    for (const det of detalleIngredientes) {
+        await client.query(
+            `INSERT INTO produccion_detalle (
+                produccion_id, ingrediente_id, ingrediente_nombre, ingrediente_unidad, porcentaje, cantidad_consumida, costo_unitario, costo_total
+             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+            [
+                produccion.id,
+                det.ingrediente_id,
+                det.ingrediente_nombre,
+                det.ingrediente_unidad,
+                det.porcentaje,
+                det.cantidad_consumida,
+                det.costo_unitario,
+                det.costo_total
+            ]
+        );
+    }
+
+    return {
+        produccion,
+        receta,
+        costoTotalReceta: redondear3(costoTotalReceta),
+        detalleIngredientes
+    };
+};
+
 // Endpoint para producción directa
-app.post('/api/produccion', async (req, res) => {
+app.post('/api/produccion', authenticateToken, async (req, res) => {
     const client = await db.pool.connect();
     try {
+        if (!req.user) return res.status(401).json({ error: 'Token requerido' });
         await client.query('BEGIN');
-        
         const { receta_id, cantidad } = req.body;
-        console.log('🏭 Iniciando producción directa:', { receta_id, cantidad });
-        
-        // Obtener datos de la receta
-        const recetaResult = await client.query(
-            'SELECT r.*, p.nombre as producto_nombre, p.unidad as producto_unidad, p.categoria as producto_categoria FROM recetas r JOIN productos p ON r.producto_id = p.id WHERE r.id = $1 AND r.activa = TRUE',
-            [receta_id]
-        );
-        
-        if (recetaResult.rows.length === 0) {
+        const recetaIdNum = Number(receta_id);
+        const cantidadKg = Number(cantidad);
+        if (!Number.isInteger(recetaIdNum) || recetaIdNum <= 0) {
             await client.query('ROLLBACK');
-            return res.status(404).json({ error: 'Receta no encontrada o inactiva' });
+            return res.status(400).json({ error: 'Receta inválida' });
         }
-        
-        const receta = recetaResult.rows[0];
-        console.log('📋 Receta encontrada:', receta.nombre);
-        
-        // Obtener ingredientes de la receta
-        const ingredientesResult = await client.query(
-            'SELECT ri.*, i.nombre as ingrediente_nombre, i.stock as stock_actual FROM receta_ingredientes ri JOIN ingredientes i ON ri.ingrediente_id = i.id WHERE ri.receta_id = $1',
-            [receta_id]
-        );
-        
-        if (ingredientesResult.rows.length === 0) {
+        if (!Number.isFinite(cantidadKg) || cantidadKg <= 0) {
             await client.query('ROLLBACK');
-            return res.status(400).json({ error: 'La receta no tiene ingredientes definidos' });
+            return res.status(400).json({ error: 'Cantidad inválida' });
         }
-        
-        // Verificar y descontar stock de ingredientes
-        for (const ing of ingredientesResult.rows) {
-            const cantidadRequerida = (ing.cantidad * cantidad) / receta.rendimiento;
-            console.log(`🔍 Verificando ${ing.ingrediente_nombre}: necesita ${cantidadRequerida.toFixed(3)}, tiene ${ing.stock_actual}`);
-            
-            if (ing.stock_actual < cantidadRequerida) {
-                await client.query('ROLLBACK');
-                return res.status(400).json({ 
-                    error: `Stock insuficiente para ${ing.ingrediente_nombre}. Stock actual: ${ing.stock_actual}, Requerido: ${cantidadRequerida.toFixed(3)}` 
-                });
-            }
-            
-            // Descontar stock del ingrediente
-            await client.query(
-                'UPDATE ingredientes SET stock = stock - $1, actualizado_en = NOW() WHERE id = $2',
-                [cantidadRequerida, ing.ingrediente_id]
-            );
-            
-            console.log(`✅ Stock descontado: ${ing.ingrediente_nombre} (-${cantidadRequerida.toFixed(3)})`);
-        }
-        
-        // Aumentar stock del producto
-        let cantidadFinal = cantidad;
-        let unidadFinal = receta.producto_unidad;
-        let notasProduccion = `Producción directa: ${cantidad} ${receta.producto_unidad} de ${receta.producto_nombre}`;
-        
-        // Para hamburguesas: convertir kg a unidades de 150gr
-        if (receta.producto_categoria === 'Hamburguesas' || receta.producto_nombre.toLowerCase().includes('hamburguesa')) {
-            const pesoPorUnidad = 0.150; // 150 gramos = 0.150 kg
-            cantidadFinal = Math.floor(cantidad / pesoPorUnidad); // Convertir kg a unidades de 150gr
-            unidadFinal = 'unidad';
-            notasProduccion = `Producción directa: ${cantidad} kg convertidos a ${cantidadFinal} unidades de 150gr de ${receta.producto_nombre}`;
-            console.log(`🔄 Conversión hamburguesas: ${cantidad} kg → ${cantidadFinal} unidades (150gr c/u)`);
-        }
-        
-        await client.query(
-            'UPDATE productos SET stock = stock + $1, actualizado_en = NOW() WHERE id = $2',
-            [cantidadFinal, receta.producto_id]
-        );
-        await normalizarProductoFinalPorId(client, receta.producto_id);
-        
-        console.log(`✅ Stock aumentado: ${receta.producto_nombre} (+${cantidadFinal} ${unidadFinal})`);
-        
-        // Registrar producción en el historial
-        await client.query(
-            'INSERT INTO produccion (receta_id, cantidad_producida, notas) VALUES ($1, $2, $3)',
-            [receta_id, cantidadFinal, notasProduccion]
-        );
-        
+
+        const resultado = await ejecutarProduccion(client, {
+            recetaId: recetaIdNum,
+            cantidadKg,
+            usuario: req.user?.usuario || 'sistema'
+        });
         await client.query('COMMIT');
-        console.log('✅ Producción completada exitosamente');
-        
+
         res.status(201).json({ 
             mensaje: 'Producción completada exitosamente',
-            receta: receta.nombre,
-            producto: receta.producto_nombre,
-            cantidad_producida: cantidadFinal,
-            unidad: unidadFinal,
-            ingredientes_utilizados: ingredientesResult.rows.length,
-            conversion_aplicada: receta.producto_categoria === 'Hamburguesas' ? `${cantidad} kg → ${cantidadFinal} unidades de 150gr` : null
+            receta: resultado.receta.nombre,
+            producto: resultado.receta.producto_nombre,
+            lote: resultado.produccion.lote,
+            cantidad_producida: resultado.produccion.cantidad_producida,
+            cantidad_lotes: resultado.produccion.cantidad_lotes,
+            unidad: resultado.produccion.unidad_producida || resultado.receta.producto_unidad || 'kg',
+            costo_total_receta: resultado.costoTotalReceta,
+            usuario_proceso: resultado.produccion.usuario_proceso || req.user?.usuario || 'sistema',
+            fecha_elaboracion: resultado.produccion.fecha_elaboracion || resultado.produccion.fecha,
+            ingredientes_utilizados: resultado.detalleIngredientes.length
         });
         
     } catch (error) {
         await client.query('ROLLBACK');
-        console.error('❌ Error en producción:', error.message);
-        res.status(500).json({ error: 'Error en el proceso de producción', detalle: error.message });
+        const status = /inválid|insuficiente|no encontrada|no tiene ingredientes/i.test(String(error.message || '')) ? 400 : 500;
+        res.status(status).json({ error: 'Error en el proceso de producción', detalle: error.message });
     } finally {
         client.release();
     }
@@ -1169,69 +1206,36 @@ app.get('/api/auditoria/estadisticas', async (req, res) => {
 // PRODUCCIÓN
 // ============================================
 
-app.post('/api/produccion/fabricar', async (req, res) => {
+app.post('/api/produccion/fabricar', authenticateToken, async (req, res) => {
     const client = await db.pool.connect();
     try {
+        if (!req.user) return res.status(401).json({ error: 'Token requerido' });
         await client.query('BEGIN');
         const { receta_id, cantidad_lotes = 1 } = req.body;
+        const recetaIdNum = Number(receta_id);
         const lotes = parseInt(cantidad_lotes);
+        if (!Number.isInteger(recetaIdNum) || recetaIdNum <= 0) throw new Error('Receta inválida');
         if (isNaN(lotes) || lotes <= 0) throw new Error('Cantidad de lotes inválida');
-
-        const recetaResult = await client.query(`
-            SELECT r.*, p.nombre as producto_nombre, p.unidad as producto_unidad
-            FROM recetas r JOIN productos p ON r.producto_id = p.id
-            WHERE r.id = $1 AND r.activa = TRUE
-        `, [receta_id]);
-        if (recetaResult.rows.length === 0) throw new Error('Receta no encontrada o inactiva');
-        const receta = recetaResult.rows[0];
-
-        const ingResult = await client.query(`
-            SELECT ri.ingrediente_id, ri.cantidad, i.nombre, i.stock
-            FROM receta_ingredientes ri JOIN ingredientes i ON ri.ingrediente_id = i.id
-            WHERE ri.receta_id = $1
-        `, [receta_id]);
-
-        const faltantes = [];
-        for (const ing of ingResult.rows) {
-            const necesario = ing.cantidad * lotes;
-            if (ing.stock < necesario) {
-                faltantes.push({ nombre: ing.nombre, necesario: necesario.toFixed(3), disponible: ing.stock.toFixed(3) });
-            }
-        }
-        if (faltantes.length > 0) {
-            throw new Error(`Stock insuficiente: ${faltantes.map(f => `${f.nombre} (necesita ${f.necesario}, tiene ${f.disponible})`).join(', ')}`);
-        }
-
-        for (const ing of ingResult.rows) {
-            await client.query(
-                `UPDATE ingredientes SET stock = stock - $1, actualizado_en = NOW() WHERE id = $2`,
-                [ing.cantidad * lotes, ing.ingrediente_id]
-            );
-        }
-
-        const cantidadProducida = receta.rendimiento * lotes;
-        await client.query(
-            `UPDATE productos SET stock = stock + $1, actualizado_en = NOW() WHERE id = $2`,
-            [cantidadProducida, receta.producto_id]
-        );
-        await normalizarProductoFinalPorId(client, receta.producto_id);
-
-        const prodResult = await client.query(
-            `INSERT INTO produccion (receta_id, cantidad_lotes, cantidad_producida, notas)
-             VALUES ($1,$2,$3,$4) RETURNING *`,
-            [receta_id, lotes, cantidadProducida, `Producción de ${receta.nombre} - ${lotes} lote(s)`]
-        );
+        const recetaBase = await client.query('SELECT id, rendimiento FROM recetas WHERE id = $1 AND activa = TRUE', [recetaIdNum]);
+        if (recetaBase.rows.length === 0) throw new Error('Receta no encontrada o inactiva');
+        const cantidadKg = (Number(recetaBase.rows[0].rendimiento) || 1) * lotes;
+        const resultado = await ejecutarProduccion(client, {
+            recetaId: recetaIdNum,
+            cantidadKg,
+            usuario: req.user?.usuario || 'sistema'
+        });
 
         await client.query('COMMIT');
         res.json({
             exito: true,
-            mensaje: `✅ Producción exitosa: ${cantidadProducida} ${receta.producto_unidad || 'unidades'} de ${receta.producto_nombre}`,
-            produccion: { ...prodResult.rows[0], receta_nombre: receta.nombre, producto_nombre: receta.producto_nombre },
-            ingredientes_usados: ingResult.rows.map(ing => ({ nombre: ing.nombre, cantidad: (ing.cantidad * lotes).toFixed(3) }))
+            mensaje: `✅ Producción exitosa: ${resultado.produccion.cantidad_producida} ${resultado.produccion.unidad_producida || 'unidades'} de ${resultado.receta.producto_nombre}`,
+            produccion: { ...resultado.produccion, receta_nombre: resultado.receta.nombre, producto_nombre: resultado.receta.producto_nombre },
+            ingredientes_usados: resultado.detalleIngredientes.map((ing) => ({ nombre: ing.ingrediente_nombre, cantidad: ing.cantidad_consumida }))
         });
     } catch (error) {
         await client.query('ROLLBACK');
-        res.status(400).json({ error: error.message });
+        const status = /inválid|insuficiente|no encontrada|no tiene ingredientes/i.test(String(error.message || '')) ? 400 : 500;
+        res.status(status).json({ error: error.message });
     } finally {
         client.release();
     }
@@ -1249,6 +1253,113 @@ app.get('/api/produccion/historial', async (req, res) => {
         res.json(result.rows);
     } catch (error) {
         res.status(500).json({ error: 'Error al obtener historial', detalle: error.message });
+    }
+});
+
+app.get('/api/produccion/detalle/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const prodResult = await db.query(`
+            SELECT p.*, r.nombre as receta_nombre, prod.nombre as producto_nombre, prod.unidad as producto_unidad
+            FROM produccion p
+            JOIN recetas r ON p.receta_id = r.id
+            JOIN productos prod ON r.producto_id = prod.id
+            WHERE p.id = $1
+            LIMIT 1
+        `, [id]);
+        if (prodResult.rows.length === 0) return res.status(404).json({ error: 'Producción no encontrada' });
+
+        const detalle = await db.query(`
+            SELECT
+                id,
+                ingrediente_id,
+                ingrediente_nombre,
+                ingrediente_unidad,
+                porcentaje,
+                cantidad_consumida,
+                ROUND(cantidad_consumida * 1000, 3) as gramos,
+                costo_unitario,
+                costo_total
+            FROM produccion_detalle
+            WHERE produccion_id = $1
+            ORDER BY id ASC
+        `, [id]);
+
+        const produccion = prodResult.rows[0];
+        res.json({
+            produccion,
+            costo_total_receta: produccion.costo_total_receta || 0,
+            ingredientes: detalle.rows
+        });
+    } catch (error) {
+        res.status(500).json({ error: 'Error al consultar detalle de producción', detalle: error.message });
+    }
+});
+
+app.get('/api/produccion/config-proteinas', async (req, res) => {
+    try {
+        const result = await db.query('SELECT id, patron, descripcion, activo, creado_en, actualizado_en FROM produccion_config_proteinas ORDER BY patron ASC');
+        res.json(result.rows);
+    } catch (error) {
+        res.status(500).json({ error: 'Error al obtener configuración de proteínas', detalle: error.message });
+    }
+});
+
+app.post('/api/produccion/config-proteinas', authenticateToken, async (req, res) => {
+    try {
+        if (!req.user || req.user.rol !== 'admin') return res.status(403).json({ error: 'Permiso denegado' });
+        const patron = String(req.body?.patron || '').trim().toLowerCase();
+        const descripcion = String(req.body?.descripcion || '').trim() || null;
+        const activo = req.body?.activo !== false;
+        if (!patron) return res.status(400).json({ error: 'Patrón requerido' });
+        const result = await db.query(
+            `INSERT INTO produccion_config_proteinas (patron, descripcion, activo)
+             VALUES ($1, $2, $3)
+             RETURNING id, patron, descripcion, activo, creado_en, actualizado_en`,
+            [patron, descripcion, activo]
+        );
+        res.status(201).json(result.rows[0]);
+    } catch (error) {
+        if (String(error.message || '').includes('duplicate key')) {
+            return res.status(409).json({ error: 'Ese patrón ya existe' });
+        }
+        res.status(500).json({ error: 'Error al crear patrón', detalle: error.message });
+    }
+});
+
+app.put('/api/produccion/config-proteinas/:id', authenticateToken, async (req, res) => {
+    try {
+        if (!req.user || req.user.rol !== 'admin') return res.status(403).json({ error: 'Permiso denegado' });
+        const { id } = req.params;
+        const patron = req.body?.patron !== undefined ? String(req.body.patron || '').trim().toLowerCase() : null;
+        const descripcion = req.body?.descripcion !== undefined ? String(req.body.descripcion || '').trim() : null;
+        const activo = req.body?.activo;
+        const result = await db.query(
+            `UPDATE produccion_config_proteinas
+             SET patron = COALESCE($1, patron),
+                 descripcion = COALESCE($2, descripcion),
+                 activo = COALESCE($3, activo),
+                 actualizado_en = NOW()
+             WHERE id = $4
+             RETURNING id, patron, descripcion, activo, creado_en, actualizado_en`,
+            [patron && patron.length > 0 ? patron : null, descripcion, activo !== undefined ? Boolean(activo) : null, id]
+        );
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Patrón no encontrado' });
+        res.json(result.rows[0]);
+    } catch (error) {
+        res.status(500).json({ error: 'Error al actualizar patrón', detalle: error.message });
+    }
+});
+
+app.delete('/api/produccion/config-proteinas/:id', authenticateToken, async (req, res) => {
+    try {
+        if (!req.user || req.user.rol !== 'admin') return res.status(403).json({ error: 'Permiso denegado' });
+        const { id } = req.params;
+        const result = await db.query('DELETE FROM produccion_config_proteinas WHERE id = $1 RETURNING id', [id]);
+        if (result.rows.length === 0) return res.status(404).json({ error: 'Patrón no encontrado' });
+        res.json({ mensaje: 'Patrón eliminado correctamente' });
+    } catch (error) {
+        res.status(500).json({ error: 'Error al eliminar patrón', detalle: error.message });
     }
 });
 
@@ -1434,10 +1545,12 @@ app.post('/api/ventas/:id/pagos', async (req, res) => {
         const montoOriginalRegistro = Number.isFinite(montoOriginalNum) && montoOriginalNum > 0
             ? montoOriginalNum
             : (monedaOriginal === 'USD' ? (montoAplicar / tasaCambio) : montoAplicar);
+        const montoBsRegistro = Number(montoAplicar.toFixed(2));
+        const montoUsdRegistro = Number((montoAplicar / Math.max(tasaCambio, 1)).toFixed(2));
         await client.query(
-            `INSERT INTO venta_pagos (venta_id, monto, monto_ves, metodo_pago, referencia_pago, tasa_cambio, moneda_original, monto_original)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-            [id, montoAplicar, montoAplicar, metodo_pago, referencia_pago || null, tasaCambio, monedaOriginal, montoOriginalRegistro]
+            `INSERT INTO venta_pagos (venta_id, monto, monto_ves, monto_bs, monto_usd, metodo_pago, referencia_pago, tasa_cambio, moneda_original, monto_original)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+            [id, montoAplicar, montoAplicar, montoBsRegistro, montoUsdRegistro, metodo_pago, referencia_pago || null, tasaCambio, monedaOriginal, montoOriginalRegistro]
         );
 
         await client.query('COMMIT');
@@ -1847,7 +1960,7 @@ app.get('/api/ventas/:id', async (req, res) => {
         let pagos = [];
         try {
             const pagosResult = await db.query(`
-                SELECT id, fecha, monto, monto_ves, metodo_pago, referencia_pago, tasa_cambio, moneda_original, monto_original
+                SELECT id, fecha, monto, monto_ves, monto_bs, monto_usd, metodo_pago, referencia_pago, tasa_cambio, moneda_original, monto_original
                 FROM venta_pagos
                 WHERE venta_id = $1
                 ORDER BY fecha ASC
@@ -2537,9 +2650,9 @@ app.post('/api/pedidos/:id/convertir-venta', async (req, res) => {
             const pagosRows = await db.query(`SELECT * FROM pedido_pagos WHERE pedido_id = $1 ORDER BY fecha ASC`, [id]);
             for (const pago of pagosRows.rows) {
                 await db.query(
-                    `INSERT INTO venta_pagos (venta_id, monto, monto_ves, metodo_pago, referencia_pago, tasa_cambio, fecha)
-                     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-                    [ventaId, pago.monto, pago.monto, pago.metodo_pago || null, pago.referencia_pago || null, 1, pago.fecha || null]
+                    `INSERT INTO venta_pagos (venta_id, monto, monto_ves, monto_bs, monto_usd, metodo_pago, referencia_pago, tasa_cambio, fecha)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+                    [ventaId, pago.monto, pago.monto, pago.monto, pago.monto, pago.metodo_pago || null, pago.referencia_pago || null, 1, pago.fecha || null]
                 );
             }
             if (pagosRows.rows.length > 0) {
@@ -2863,9 +2976,9 @@ app.post('/api/pedidos/:id/pagos', async (req, res) => {
                 const nuevoEstadoVenta = nuevoSaldoVenta <= 0 ? 'pagado' : 'parcial';
 
                 await client.query(
-                    `INSERT INTO venta_pagos (venta_id, monto, monto_ves, metodo_pago, referencia_pago, tasa_cambio)
-                     VALUES ($1,$2,$3,$4,$5,$6)`,
-                    [ventaId, montoNum, montoNum, metodo_pago || null, referencia_pago || null, 1]
+                    `INSERT INTO venta_pagos (venta_id, monto, monto_ves, monto_bs, monto_usd, metodo_pago, referencia_pago, tasa_cambio)
+                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+                    [ventaId, montoNum, montoNum, montoNum, montoNum, metodo_pago || null, referencia_pago || null, 1]
                 );
 
                 await client.query(
@@ -3820,6 +3933,8 @@ async function initDb() {
                 venta_id INTEGER REFERENCES ventas(id) ON DELETE CASCADE,
                 monto DECIMAL(12,2) NOT NULL,
                 monto_ves DECIMAL(14,2),
+                monto_bs DECIMAL(14,2),
+                monto_usd DECIMAL(14,2),
                 metodo_pago VARCHAR(50),
                 referencia_pago VARCHAR(100),
                 tasa_cambio DECIMAL(12,4) DEFAULT 1,
@@ -3864,6 +3979,44 @@ async function initDb() {
                 fecha TIMESTAMP DEFAULT NOW()
             )
         `);
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS produccion (
+                id SERIAL PRIMARY KEY,
+                receta_id INTEGER REFERENCES recetas(id),
+                cantidad_lotes INTEGER NOT NULL DEFAULT 1,
+                cantidad_producida DECIMAL(10,3) NOT NULL DEFAULT 0,
+                costo_total_receta DECIMAL(12,2) DEFAULT 0,
+                lote VARCHAR(80),
+                usuario_proceso VARCHAR(120) DEFAULT 'sistema',
+                fecha_elaboracion TIMESTAMP DEFAULT NOW(),
+                unidad_producida VARCHAR(20) DEFAULT 'kg',
+                fecha TIMESTAMP DEFAULT NOW(),
+                notas TEXT
+            )
+        `);
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS produccion_detalle (
+                id SERIAL PRIMARY KEY,
+                produccion_id INTEGER REFERENCES produccion(id) ON DELETE CASCADE,
+                ingrediente_id INTEGER REFERENCES ingredientes(id),
+                ingrediente_nombre VARCHAR(180),
+                ingrediente_unidad VARCHAR(20),
+                porcentaje DECIMAL(10,3) DEFAULT 0,
+                cantidad_consumida DECIMAL(12,3) DEFAULT 0,
+                costo_unitario DECIMAL(12,4) DEFAULT 0,
+                costo_total DECIMAL(12,2) DEFAULT 0
+            )
+        `);
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS produccion_config_proteinas (
+                id SERIAL PRIMARY KEY,
+                patron VARCHAR(120) NOT NULL UNIQUE,
+                descripcion TEXT,
+                activo BOOLEAN DEFAULT TRUE,
+                creado_en TIMESTAMP DEFAULT NOW(),
+                actualizado_en TIMESTAMP DEFAULT NOW()
+            )
+        `);
         // Migraciones: agregar columnas faltantes si la tabla ya existe
         const migrations = [
             `ALTER TABLE ventas ADD COLUMN IF NOT EXISTS cliente_id INTEGER REFERENCES clientes(id) ON DELETE SET NULL`,
@@ -3880,6 +4033,10 @@ async function initDb() {
             `ALTER TABLE ventas ADD COLUMN IF NOT EXISTS actualizado_en TIMESTAMP DEFAULT NOW()`,
             `ALTER TABLE venta_detalles ADD COLUMN IF NOT EXISTS precio_moneda_original DECIMAL(10,2)`,
             `ALTER TABLE venta_detalles ADD COLUMN IF NOT EXISTS moneda_original VARCHAR(10) DEFAULT 'USD'`,
+            `ALTER TABLE venta_pagos ADD COLUMN IF NOT EXISTS monto_bs DECIMAL(14,2)`,
+            `ALTER TABLE venta_pagos ADD COLUMN IF NOT EXISTS monto_usd DECIMAL(14,2)`,
+            `ALTER TABLE venta_pagos ADD COLUMN IF NOT EXISTS moneda_original VARCHAR(10) DEFAULT 'USD'`,
+            `ALTER TABLE venta_pagos ADD COLUMN IF NOT EXISTS monto_original DECIMAL(14,2)`,
             `ALTER TABLE pedido_items ADD COLUMN IF NOT EXISTS peso_entregado DECIMAL(10,3) DEFAULT 0`,
             `ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS monto_pagado DECIMAL(12,2) DEFAULT 0`,
             `ALTER TABLE pedidos ADD COLUMN IF NOT EXISTS saldo_pendiente DECIMAL(12,2) DEFAULT 0`,
@@ -3899,9 +4056,51 @@ async function initDb() {
             `ALTER TABLE gastos_operativos ADD COLUMN IF NOT EXISTS usuario_registro VARCHAR(120) DEFAULT 'sistema'`,
             `ALTER TABLE gastos_operativos ADD COLUMN IF NOT EXISTS fecha TIMESTAMP DEFAULT NOW()`,
             `ALTER TABLE gastos_operativos ADD COLUMN IF NOT EXISTS creado_en TIMESTAMP DEFAULT NOW()`,
+            `ALTER TABLE produccion ADD COLUMN IF NOT EXISTS costo_total_receta DECIMAL(12,2) DEFAULT 0`,
+            `ALTER TABLE produccion ADD COLUMN IF NOT EXISTS lote VARCHAR(80)`,
+            `ALTER TABLE produccion ADD COLUMN IF NOT EXISTS usuario_proceso VARCHAR(120) DEFAULT 'sistema'`,
+            `ALTER TABLE produccion ADD COLUMN IF NOT EXISTS fecha_elaboracion TIMESTAMP DEFAULT NOW()`,
+            `ALTER TABLE produccion ADD COLUMN IF NOT EXISTS unidad_producida VARCHAR(20) DEFAULT 'kg'`,
         ];
         for (const sql of migrations) {
             try { await db.query(sql); } catch (e) { /* columna ya existe */ }
+        }
+        try {
+            const cfgCount = await db.query('SELECT COUNT(*)::int AS total FROM produccion_config_proteinas');
+            if ((cfgCount.rows?.[0]?.total || 0) === 0) {
+                await db.query(`
+                    INSERT INTO produccion_config_proteinas (patron, descripcion, activo)
+                    VALUES
+                        ('pollo', 'Patron base proteina', TRUE),
+                        ('cerdo', 'Patron base proteina', TRUE),
+                        ('res', 'Patron base proteina', TRUE),
+                        ('cordero', 'Patron base proteina', TRUE),
+                        ('manteca', 'Patron base proteina', TRUE)
+                    ON CONFLICT (patron) DO NOTHING
+                `);
+            }
+        } catch (e) {
+            console.warn('No se pudo inicializar produccion_config_proteinas:', e.message);
+        }
+        try {
+            await db.query(`
+                UPDATE venta_pagos
+                SET monto_bs = COALESCE(monto_bs, monto_ves, monto)
+                WHERE monto_bs IS NULL
+            `);
+            await db.query(`
+                UPDATE venta_pagos
+                SET monto_usd = COALESCE(
+                    monto_usd,
+                    CASE
+                        WHEN COALESCE(tasa_cambio, 0) > 0 THEN COALESCE(monto_bs, monto_ves, monto) / tasa_cambio
+                        ELSE COALESCE(monto_original, monto)
+                    END
+                )
+                WHERE monto_usd IS NULL
+            `);
+        } catch (e) {
+            console.warn('No se pudo completar backfill de montos USD/BS en venta_pagos:', e.message);
         }
         // Tabla de pedidos
         await db.query(`
