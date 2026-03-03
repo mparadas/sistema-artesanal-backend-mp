@@ -6,18 +6,20 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
-// Debug inicial - verificar variables ANTES de cargar db
-console.log('🔍 DEBUG INICIAL - Variables de entorno en server.js:');
-console.log('DATABASE_URL:', process.env.DATABASE_URL ? '✅ Definida' : '❌ No definida');
-console.log('POSTGRES_URL:', process.env.POSTGRES_URL ? '✅ Definida' : '❌ No definida');
-console.log('NEON_DATABASE_URL:', process.env.NEON_DATABASE_URL ? '✅ Definida' : '❌ No definida');
-
 const db = require('./config/database');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { registrarAuditoria, middlewareAuditoria } = require('./utils/auditoria');
 
-const JWT_SECRET = process.env.JWT_SECRET || 'dev_jwt_secret_change_me';
+const NODE_ENV = process.env.NODE_ENV || 'development';
+let JWT_SECRET = process.env.JWT_SECRET || '';
+if (!JWT_SECRET) {
+    if (NODE_ENV === 'production') {
+        throw new Error('JWT_SECRET es obligatorio en producción');
+    }
+    JWT_SECRET = crypto.randomBytes(32).toString('hex');
+    console.warn('⚠️ JWT_SECRET no definido. Generado secreto temporal para entorno no productivo.');
+}
 const MAIL_FROM = process.env.MAIL_FROM || 'Ventas@agromae.com';
 
 const app = express();
@@ -177,6 +179,41 @@ const normalizarProductoFinalPorId = async (queryable, productoId) => {
         [normalizado.peso_total, normalizado.cantidad_piezas, productoId]
     );
 };
+const normalizarImagenProductoPath = (valor) => {
+    if (valor === undefined || valor === null) return null;
+    const raw = String(valor).trim();
+    if (!raw) return null;
+
+    if (raw.startsWith('/uploads/productos/')) return raw;
+    if (raw.startsWith('uploads/productos/')) return `/${raw}`;
+
+    const uploadMatch = raw.match(/\/uploads\/productos\/[^?#\s]+/i);
+    if (uploadMatch && uploadMatch[0]) {
+        return uploadMatch[0];
+    }
+
+    return raw;
+};
+
+const PUBLIC_MUTATION_ALLOWLIST = [
+    '/api/public/pedidos',
+    '/api/auth/login',
+    '/api/health',
+    '/api/test-mobile'
+];
+
+const shouldRequireAuthForMutation = (req) => {
+    const method = String(req.method || 'GET').toUpperCase();
+    if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) return false;
+    const pathReq = String(req.path || '');
+    if (!pathReq.startsWith('/api/')) return false;
+    return !PUBLIC_MUTATION_ALLOWLIST.some((allowed) => pathReq === allowed || pathReq.startsWith(`${allowed}/`));
+};
+
+app.use((req, res, next) => {
+    if (!shouldRequireAuthForMutation(req)) return next();
+    return authenticateToken(req, res, next);
+});
 
 // ============================================
 // SALUD
@@ -316,7 +353,7 @@ app.post('/api/productos', authenticateToken, async (req, res) => {
             cantidad_piezas: parseInt(cantidad_piezas || 0, 10) || 0,
             peso_total: toNumber(peso_total, 0),
             precio_canal: precio_canal || 0,
-            imagen_url: imagen_url || null
+            imagen_url: normalizarImagenProductoPath(imagen_url)
         };
         const normalizados = normalizarCamposProductoFinal(baseProducto, baseProducto);
         const nuevoProducto = {
@@ -408,7 +445,7 @@ app.put('/api/productos/:id', authenticateToken, async (req, res) => {
                 normalizados.cantidad_piezas,
                 normalizados.peso_total,
                 precio_canal,
-                imagen_url,
+                normalizarImagenProductoPath(imagen_url),
                 id
             ]
         );
@@ -578,7 +615,7 @@ app.put('/api/productos/:id/mantenimiento', authenticateToken, async (req, res) 
         
         const nuevoPrecio = (precio === undefined || precio === null || precio === '') ? null : (parseFloat(precio) || 0);
         const nuevoPrecioCanal = (precio_canal === undefined || precio_canal === null || precio_canal === '') ? null : (parseFloat(precio_canal) || 0);
-        const nuevaImagen = (imagen_url === undefined || imagen_url === null || String(imagen_url).trim() === '') ? null : String(imagen_url).trim();
+        const nuevaImagen = normalizarImagenProductoPath(imagen_url);
 
         console.log('🔍 Nuevos valores:', { nuevoPrecio, nuevoPrecioCanal, nuevaImagen });
 
@@ -4154,7 +4191,14 @@ async function initDb() {
         // Usuario admin por defecto si no existe ninguno
         const adminExiste = await db.query(`SELECT id FROM usuarios WHERE usuario = 'admin'`);
         if (adminExiste.rows.length === 0) {
-            const adminPass = process.env.ADMIN_PASS || 'admin123';
+            let adminPass = process.env.ADMIN_PASS || '';
+            if (!adminPass) {
+                if (NODE_ENV === 'production') {
+                    throw new Error('ADMIN_PASS es obligatorio en producción cuando no existe usuario admin');
+                }
+                adminPass = crypto.randomBytes(10).toString('base64url');
+                console.warn('⚠️ ADMIN_PASS no definido. Se generó una contraseña temporal para admin en entorno no productivo.');
+            }
             const hashedAdmin = await bcrypt.hash(adminPass, 10);
             await db.query(
                 `INSERT INTO usuarios (nombre, usuario, password, rol) VALUES ($1, $2, $3, $4)`,
