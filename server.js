@@ -17,8 +17,8 @@ if (!JWT_SECRET) {
     if (NODE_ENV === 'production') {
         throw new Error('JWT_SECRET es obligatorio en producción');
     }
-    JWT_SECRET = crypto.randomBytes(32).toString('hex');
-    console.warn('⚠️ JWT_SECRET no definido. Generado secreto temporal para entorno no productivo.');
+    JWT_SECRET = 'desarrollo_secreto_super_seguro_12345';
+    console.warn('⚠️ JWT_SECRET no definido. Usando secreto estático para entorno no productivo.');
 }
 const MAIL_FROM = process.env.MAIL_FROM || 'Ventas@agromae.com';
 

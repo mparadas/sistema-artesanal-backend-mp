@@ -1,5 +1,40 @@
 const db = require('../config/database');
 const cron = require('node-cron');
+const axios = require('axios');
+const cheerio = require('cheerio');
+const https = require('https');
+
+// Función para hacer scraping de la página del BCV
+async function obtenerTasaBCV() {
+  try {
+    const agent = new https.Agent({ rejectUnauthorized: false });
+    const response = await axios.get('https://www.bcv.org.ve/', {
+      httpsAgent: agent,
+      timeout: 10000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      }
+    });
+    
+    const $ = cheerio.load(response.data);
+    // El texto se encuentra dentro de div#dolar > div.centrado > strong
+    const dolarTexto = $('#dolar strong').text().trim();
+    if (!dolarTexto) {
+      throw new Error('No se pudo encontrar el valor del dólar en el DOM del BCV');
+    }
+    
+    // Parsear el texto a número: '24,50' -> 24.50
+    const tasa = parseFloat(dolarTexto.replace(',', '.'));
+    if (isNaN(tasa)) {
+       throw new Error(`Error al parsear la tasa: ${dolarTexto}`);
+    }
+    
+    return tasa;
+  } catch (error) {
+    console.error('Error haciendo scraping al BCV:', error.message);
+    return null;
+  }
+}
 
 // Función para registrar automáticamente la tasa del día
 async function registrarTasaDelDia() {
@@ -15,51 +50,46 @@ async function registrarTasaDelDia() {
     );
     
     if (existing.rows.length > 0) {
-      console.log('ℹ️ Ya existe una tasa de cambio para hoy');
+      console.log('ℹ️ Ya existe una tasa de cambio diaria para hoy:', existing.rows[0]);
       return existing.rows[0];
     }
     
-    // Obtener la tasa actual de la tabla tasas_cambio
-    const currentRate = await db.query(
-      'SELECT * FROM tasas_cambio WHERE fecha = $1 AND activa = true ORDER BY id DESC LIMIT 1',
-      [hoy]
+    // Obtenemos la tasa oficial consultando la web del BCV
+    console.log('🌐 Consultando tasa en el portal web de BCV...');
+    let tasaBcvOficial = await obtenerTasaBCV();
+    
+    // Fallback: si falla el scraping, obtener la última tasa activa en nuestra base
+    if (!tasaBcvOficial) {
+      const currentRate = await db.query(
+        'SELECT * FROM tasas_cambio WHERE activa = true ORDER BY id DESC LIMIT 1'
+      );
+      tasaBcvOficial = currentRate.rows.length > 0 ? parseFloat(currentRate.rows[0].tasa_bcv) : 50.00;
+      console.log(`⚠️ Scraping falló. Usando tasa de respaldo (${tasaBcvOficial}) de la base de datos local.`);
+    } else {
+      console.log(`✅ Scraping exitoso. Tasa BCV web leída: ${tasaBcvOficial}`);
+    }
+    
+    const result = await db.query(`
+      INSERT INTO tasas_cambio_diarias (fecha, tasa_bcv, tasa_paralelo, usuario, ip_address, user_agent)
+      VALUES ($1, $2, $3, $4, $5, $6)
+      RETURNING *
+    `, [
+      hoy,
+      tasaBcvOficial,
+      tasaBcvOficial, // Asumiendo temporalmente paralelo igual que bcv para registro automático
+      'sistema_automatico',
+      '127.0.0.1',
+      'Node.js Cron Job'
+    ]);
+    
+    // Opcionalmente, agregarla a la tabla principal 'tasas_cambio'
+    await db.query(
+      'INSERT INTO tasas_cambio (tasa_bcv, tasa_paralelo, fecha, creada_por, activa) VALUES ($1, $2, CURRENT_DATE, $3, true)',
+      [tasaBcvOficial, tasaBcvOficial, 'sistema']
     );
     
-    if (currentRate.rows.length > 0) {
-      const rate = currentRate.rows[0];
-      const result = await db.query(`
-        INSERT INTO tasas_cambio_diarias (fecha, tasa_bcv, tasa_paralelo, usuario, ip_address, user_agent)
-        VALUES ($1, $2, $3, $4, $5, $6)
-        RETURNING *
-      `, [
-        hoy,
-        rate.tasa_bcv || 0,
-        rate.tasa_bcv || 0,
-        'sistema_automatico',
-        '127.0.0.1',
-        'Node.js Cron Job'
-      ]);
-      
-      console.log('✅ Tasa de cambio del día registrada automáticamente:', result.rows[0]);
-      return result.rows[0];
-    } else {
-      // Insertar tasa por defecto si no hay tasa activa
-      const result = await db.query(`
-        INSERT INTO tasas_cambio_diarias (fecha, tasa_bcv, tasa_paralelo, usuario, ip_address, user_agent)
-        VALUES ($1, $2, $3, $4, $5, $6)
-        RETURNING *
-      `, [
-        hoy,
-        50.00,
-        52.00,
-        'sistema_automatico',
-        '127.0.0.1',
-        'Node.js Cron Job'
-      ]);
-      
-      console.log('✅ Tasa de cambio por defecto registrada automáticamente:', result.rows[0]);
-      return result.rows[0];
-    }
+    console.log('✅ Tasa de cambio del día registrada en BD:', result.rows[0]);
+    return result.rows[0];
     
   } catch (error) {
     console.error('❌ Error al registrar automáticamente tasa:', error.message);
@@ -67,24 +97,24 @@ async function registrarTasaDelDia() {
   }
 }
 
-// Programar la tarea para que se ejecute todos los días a las 8:00 AM
-cron.schedule('0 8 * * *', async () => {
-  console.log('🕐 Ejecutando tarea programada: Registrar tasa de cambio del día');
+// Programar la tarea para que se ejecute todos los días a las 2:30 PM (14:30)
+cron.schedule('30 14 * * *', async () => {
+  console.log('🕐 Ejecutando tarea programada (2:30 PM): Registrar tasa de cambio del día según BCV');
   await registrarTasaDelDia();
 });
 
-// También ejecutar al iniciar el script
 console.log('🚀 Iniciando servicio de registro automático de tasas de cambio');
-console.log('⏰ Programado para ejecutar todos los días a las 8:00 AM');
+console.log('⏰ Programado para ejecutar todos los días a las 2:30 PM (scraping BCV)');
 
 // Ejecutar inmediatamente si no hay tasa para hoy
 registrarTasaDelDia().then(result => {
   if (result) {
-    console.log('📊 Tasa registrada:', result);
-  } else {
-    console.log('ℹ️ No se pudo registrar la tasa');
+    console.log('📊 Verificación inicial de la tasa diaria completada.');
   }
 });
+
+// Llamada de prueba al iniciar (para verificar el DOM)
+obtenerTasaBCV().then(t => console.log('Tasa de prueba leída al arrancar:', t));
 
 // Mantener el proceso corriendo
 process.on('SIGINT', () => {
