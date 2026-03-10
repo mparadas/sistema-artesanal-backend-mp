@@ -131,36 +131,28 @@ const isHamburguesaUnidadExacta = (producto = {}) => {
 const normalizarCamposProductoFinal = (datosNuevos = {}, datosActuales = {}) => {
     const merged = { ...datosActuales, ...datosNuevos };
     let stock = toNumber(merged.stock, 0);
-    const cantidadPiezasInput = Math.max(0, parseInt(merged.cantidad_piezas || 0, 10) || 0);
+    const cantidadPiezas = Math.max(0, parseInt(merged.cantidad_piezas || 0, 10) || 0);
     const pesoTotalInput = toNumber(merged.peso_total, 0);
     const esPorUnidad = isHamburguesaUnidadExacta(merged);
 
     if (esPorUnidad) {
-        // Si es hamburguesa, el stock principal ahora representa Kg para consistencia.
-        // Si el usuario envió stock, lo tomamos como Kg.
-        // Si no envió stock pero sí piezas, calculamos el Kg.
-        let peso = stock;
-        
-        if (datosNuevos.stock === undefined) {
-            if (datosNuevos.cantidad_piezas !== undefined) {
-                peso = cantidadPiezasInput * PESO_UNIDAD_HAMBURGUESA_KG;
-            } else if (datosNuevos.peso_total !== undefined) {
-                peso = pesoTotalInput;
-            }
+        if (datosNuevos.stock === undefined && datosNuevos.cantidad_piezas !== undefined) {
+            stock = cantidadPiezas;
+        } else if (datosNuevos.stock === undefined && datosNuevos.peso_total !== undefined) {
+            stock = Math.max(0, Math.floor(pesoTotalInput / PESO_UNIDAD_HAMBURGUESA_KG));
         }
-
         return {
-            stock: peso,
-            peso_total: peso,
-            cantidad_piezas: Math.round(peso / PESO_UNIDAD_HAMBURGUESA_KG)
+            stock,
+            peso_total: stock * PESO_UNIDAD_HAMBURGUESA_KG,
+            cantidad_piezas: Math.round(stock)
         };
     }
 
-    // Regla general en productos finales: peso_total y stock deben ser equivalentes (Kg).
+    // Regla general en productos finales: peso_total y stock deben ser equivalentes.
     return {
         stock,
         peso_total: stock,
-        cantidad_piezas: cantidadPiezasInput
+        cantidad_piezas: cantidadPiezas
     };
 };
 const normalizarProductoFinalPorId = async (queryable, productoId) => {
