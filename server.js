@@ -378,8 +378,7 @@ app.post('/api/productos', authenticateToken, async (req, res) => {
         console.log('🔍 Producto creado con ID:', productoCreado.id);
         console.log('🔍 Datos completos:', productoCreado);
         
-        // Registrar auditoría (desactivado temporalmente para depuración)
-        /*
+        // Registrar auditoría
         await registrarAuditoria({
             tabla: 'productos',
             registroId: productoCreado.id,
@@ -389,7 +388,6 @@ app.post('/api/productos', authenticateToken, async (req, res) => {
             ipAddress: req.auditoria?.ipAddress,
             userAgent: req.auditoria?.userAgent
         });
-        */
         
         res.status(201).json(productoCreado);
     } catch (error) {
@@ -452,8 +450,7 @@ app.put('/api/productos/:id', authenticateToken, async (req, res) => {
         
         const productoActualizado = result.rows[0];
         
-        // Registrar auditoría (desactivado temporalmente para depuración)
-        /*
+        // Registrar auditoría
         await registrarAuditoria({
             tabla: 'productos',
             registroId: parseInt(id),
@@ -464,7 +461,6 @@ app.put('/api/productos/:id', authenticateToken, async (req, res) => {
             ipAddress: req.auditoria?.ipAddress,
             userAgent: req.auditoria?.userAgent
         });
-        */
         
         res.json(productoActualizado);
     } catch (error) {
@@ -486,8 +482,7 @@ app.delete('/api/productos/:id', authenticateToken, async (req, res) => {
         const result = await db.query('UPDATE productos SET activa = FALSE WHERE id = $1 RETURNING *', [id]);
         if (result.rows.length === 0) return res.status(404).json({ error: 'Producto no encontrado' });
         
-        // Registrar auditoría (desactivado temporalmente para depuración)
-        /*
+        // Registrar auditoría
         await registrarAuditoria({
             tabla: 'productos',
             registroId: parseInt(id),
@@ -497,7 +492,6 @@ app.delete('/api/productos/:id', authenticateToken, async (req, res) => {
             ipAddress: req.auditoria?.ipAddress,
             userAgent: req.auditoria?.userAgent
         });
-        */
         
         res.json({ mensaje: 'Producto eliminado', producto: datosEliminados });
     } catch (error) {
@@ -572,8 +566,22 @@ app.post('/api/productos/:id/agregar-existencia', authenticateToken, async (req,
                 [cantidad, id]
             );
         }
+        const productoActualizado = result.rows[0];
+        
+        // Registrar auditoría por incremento de existencia
+        await registrarAuditoria({
+            tabla: 'productos',
+            registroId: parseInt(id),
+            tipoMovimiento: 'UPDATE',
+            usuario: req.auditoria?.usuario || 'sistema',
+            detallesAnteriores: productoResult.rows[0],
+            detallesNuevos: productoActualizado,
+            ipAddress: req.auditoria?.ipAddress,
+            userAgent: req.auditoria?.userAgent
+        });
+
         await normalizarProductoFinalPorId(db, id);
-        res.json({ mensaje: 'Existencia agregada', producto: result.rows[0] });
+        res.json({ mensaje: 'Existencia agregada', producto: productoActualizado });
     } catch (error) {
         res.status(500).json({ error: 'Error al agregar existencia', detalle: error.message });
     }
