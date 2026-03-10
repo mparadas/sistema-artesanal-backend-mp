@@ -131,28 +131,37 @@ const isHamburguesaUnidadExacta = (producto = {}) => {
 const normalizarCamposProductoFinal = (datosNuevos = {}, datosActuales = {}) => {
     const merged = { ...datosActuales, ...datosNuevos };
     let stock = toNumber(merged.stock, 0);
-    const cantidadPiezas = Math.max(0, parseInt(merged.cantidad_piezas || 0, 10) || 0);
+    const cantidadPiezasInput = Math.max(0, parseInt(merged.cantidad_piezas || 0, 10) || 0);
     const pesoTotalInput = toNumber(merged.peso_total, 0);
     const esPorUnidad = isHamburguesaUnidadExacta(merged);
 
     if (esPorUnidad) {
-        if (datosNuevos.stock === undefined && datosNuevos.cantidad_piezas !== undefined) {
-            stock = cantidadPiezas;
-        } else if (datosNuevos.stock === undefined && datosNuevos.peso_total !== undefined) {
-            stock = Math.max(0, Math.floor(pesoTotalInput / PESO_UNIDAD_HAMBURGUESA_KG));
+        // Lógica unificada: El usuario siempre ingresa Kg.
+        // Si se recibe 'stock', se trata como Kg.
+        let pesoActualizado = stock;
+
+        // Si no se envió stock pero sí otros campos de peso/piezas (por compatibilidad con lógica vieja si hay otros endpoints)
+        if (datosNuevos.stock === undefined) {
+            if (datosNuevos.cantidad_piezas !== undefined) {
+                // Si la vieja lógica mandaba piezas, lo convertimos a Kg para el nuevo estándar
+                pesoActualizado = cantidadPiezasInput * PESO_UNIDAD_HAMBURGUESA_KG;
+            } else if (datosNuevos.peso_total !== undefined) {
+                pesoActualizado = pesoTotalInput;
+            }
         }
+
         return {
-            stock,
-            peso_total: stock * PESO_UNIDAD_HAMBURGUESA_KG,
-            cantidad_piezas: Math.round(stock)
+            stock: pesoActualizado,
+            peso_total: pesoActualizado,
+            cantidad_piezas: Math.round(pesoActualizado / PESO_UNIDAD_HAMBURGUESA_KG)
         };
     }
 
-    // Regla general en productos finales: peso_total y stock deben ser equivalentes.
+    // Regla general para productos no-hamburguesa (Cortes, etc.): stock = peso_total.
     return {
         stock,
         peso_total: stock,
-        cantidad_piezas: cantidadPiezas
+        cantidad_piezas: cantidadPiezasInput
     };
 };
 const normalizarProductoFinalPorId = async (queryable, productoId) => {
