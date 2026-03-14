@@ -1425,7 +1425,7 @@ app.post('/api/ventas', async (req, res) => {
     const client = await db.pool.connect();
     try {
         await client.query('BEGIN');
-        const { cliente_id, cliente_nombre, items, moneda, tasa_cambio, tipo_venta, metodo_pago, referencia_pago, fecha_vencimiento } = req.body;
+        const { cliente_id, cliente_nombre, items, moneda, tasa_cambio, tipo_venta, metodo_pago, referencia_pago, fecha_vencimiento, descuento_global } = req.body;
         if (!items || items.length === 0) throw new Error('La venta debe tener al menos un producto');
 
         for (const item of items) {
@@ -1435,8 +1435,18 @@ app.post('/api/ventas', async (req, res) => {
             if (stock < item.cantidad) throw new Error(`Stock insuficiente para "${nombre}". Disponible: ${stock}, Solicitado: ${item.cantidad}`);
         }
 
-        const total = items.reduce((sum, item) => sum + (item.cantidad * item.precio_unitario), 0);
+        const descuentoGlobalNum = Math.max(0, parseFloat(descuento_global) || 0);
+
+        // Sumar todos los totales de linea considerando descuentos por linea si vienen del frontend. 
+        // El total real ya viene reflejado de la sumatoria `item.cantidad * item.precio_unitario - item.descuento_monto`.
+        // Pero para estar seguros recalculamos considerando el monto y prc que vengan del frontend, o bien confiamos en el `total` que calculemos aquí:
+        const subtotalCalculado = items.reduce((sum, item) => sum + (item.cantidad * item.precio_unitario), 0);
+        // Descuentos de líneas
+        const totalDescuentosLineas = items.reduce((sum, item) => sum + (parseFloat(item.descuento_monto) || 0), 0);
         
+        let total = subtotalCalculado - totalDescuentosLineas - descuentoGlobalNum;
+        if (total < 0) total = 0;
+
         // Lógica corregida: si el estado es pendiente o parcial, debe ser crédito
         const esCredito = tipo_venta === 'credito' || (tipo_venta === 'inmediato' && !metodo_pago);
         const estado_pago = esCredito ? 'pendiente' : 'pagado';
@@ -1445,9 +1455,9 @@ app.post('/api/ventas', async (req, res) => {
         const total_ves = (moneda === 'VES' && tasa_cambio) ? total : null;
 
         const ventaResult = await client.query(
-            `INSERT INTO ventas (cliente_id, cliente_nombre, total, total_ves, moneda_original, tasa_cambio_usada, tipo_venta, metodo_pago, referencia_pago, fecha_vencimiento, estado_pago, monto_pagado, saldo_pendiente)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
-            [cliente_id || null, cliente_nombre || 'Cliente general', total, total_ves, moneda || 'USD', tasa_cambio || 1, tipo_venta || 'inmediato', metodo_pago || null, referencia_pago || null, fecha_vencimiento || null, estado_pago, monto_pagado, saldo_pendiente]
+            `INSERT INTO ventas (cliente_id, cliente_nombre, total, total_ves, moneda_original, tasa_cambio_usada, tipo_venta, metodo_pago, referencia_pago, fecha_vencimiento, estado_pago, monto_pagado, saldo_pendiente, descuento_global)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,
+            [cliente_id || null, cliente_nombre || 'Cliente general', total, total_ves, moneda || 'USD', tasa_cambio || 1, tipo_venta || 'inmediato', metodo_pago || null, referencia_pago || null, fecha_vencimiento || null, estado_pago, monto_pagado, saldo_pendiente, descuentoGlobalNum]
         );
         const ventaId = ventaResult.rows[0].id;
 
@@ -1469,10 +1479,15 @@ app.post('/api/ventas', async (req, res) => {
                 continue;
             }
             
+            const descuentoMontoNum = parseFloat(item.descuento_monto) || 0;
+            const descuentoPrcNum = parseFloat(item.descuento_prc) || 0;
+            const subtotalLinea = cantidadNumerica * item.precio_unitario;
+            const totalLinea = Math.max(0, subtotalLinea - descuentoMontoNum);
+
             await client.query(
-                `INSERT INTO venta_detalles (venta_id, producto_id, cantidad, precio_unitario, total_linea, precio_moneda_original, moneda_original)
-                 VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-                [ventaId, item.producto_id, cantidadNumerica, item.precio_unitario, cantidadNumerica * item.precio_unitario, item.precio_unitario, moneda || 'USD']
+                `INSERT INTO venta_detalles (venta_id, producto_id, cantidad, precio_unitario, total_linea, precio_moneda_original, moneda_original, descuento_monto, descuento_prc)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+                [ventaId, item.producto_id, cantidadNumerica, item.precio_unitario, totalLinea, item.precio_unitario, moneda || 'USD', descuentoMontoNum, descuentoPrcNum]
             );
             
             // Verificar stock antes de descontar
@@ -1506,7 +1521,7 @@ app.post('/api/ventas/:id/pagos', async (req, res) => {
     try {
         await client.query('BEGIN');
         const { id } = req.params;
-        const { monto_ves, metodo_pago, referencia_pago, tasa_cambio, moneda_original, monto_original } = req.body;
+        const { monto_ves, metodo_pago, referencia_pago, tasa_cambio, moneda_original, monto_original, descuento_ves } = req.body;
         
         console.log('🔍 Backend recibiendo abono:', {
             id,
@@ -1552,7 +1567,10 @@ app.post('/api/ventas/:id/pagos', async (req, res) => {
             : (parseFloat(tasa_cambio) || parseFloat(venta.tasa_cambio_usada) || 40);
         
         console.log('🔍 Moneda y tasa:', { monedaOriginal, tasaCambio });
-        
+
+        let descuentoNum = parseFloat(descuento_ves) || 0;
+        let descuentoEnMonedaOriginal = monedaOriginal === 'USD' ? (descuentoNum / tasaCambio) : descuentoNum;
+
         // Convertir saldo pendiente a VES
         let saldoActualEnVES;
         if (monedaOriginal === 'USD') {
@@ -1569,8 +1587,12 @@ app.post('/api/ventas/:id/pagos', async (req, res) => {
         });
         
         if (saldoActualEnVES <= 0.001) throw new Error('Esta venta ya esta completamente pagada');
+        
+        // Aplicar descuento antes del pago
+        saldoActualEnVES = Math.max(0, saldoActualEnVES - descuentoNum);
+        
         const montoAplicar = Math.min(monto, saldoActualEnVES + 0.02);
-        if (montoAplicar <= 0) throw new Error('Monto invalido');
+        if (montoAplicar <= 0 && descuentoNum <= 0) throw new Error('Monto o descuento invalido');
 
         const nuevoSaldo = Math.max(0, saldoActualEnVES - montoAplicar);
         const nuevoEstado = nuevoSaldo <= 0.001 ? 'pagado' : 'parcial';
@@ -1588,12 +1610,22 @@ app.post('/api/ventas/:id/pagos', async (req, res) => {
             nuevoSaldoEnVES: nuevoSaldo,
             nuevoSaldoParaGuardar: nuevoSaldoParaGuardar,
             nuevoEstado,
-            nuevoMontoPagado
+            nuevoMontoPagado,
+            descuento_aplicado: descuentoEnMonedaOriginal
         });
 
+        // Actualizar la venta sumando el descuento global y restando el total si hubo descuento
+        // COALESCE(descuento_global, 0)
         await client.query(
-            `UPDATE ventas SET saldo_pendiente = $1, estado_pago = $2, monto_pagado = $3, actualizado_en = NOW() WHERE id = $4`,
-            [nuevoSaldoParaGuardar, nuevoEstado, nuevoMontoPagado, id]
+            `UPDATE ventas 
+             SET saldo_pendiente = $1, 
+                 estado_pago = $2, 
+                 monto_pagado = $3, 
+                 descuento_global = COALESCE(descuento_global, 0) + $4,
+                 total = GREATEST(0, total - $4),
+                 actualizado_en = NOW() 
+             WHERE id = $5`,
+            [nuevoSaldoParaGuardar, nuevoEstado, nuevoMontoPagado, descuentoEnMonedaOriginal, id]
         );
         const montoOriginalNum = parseFloat(monto_original);
         const montoOriginalRegistro = Number.isFinite(montoOriginalNum) && montoOriginalNum > 0
@@ -1700,6 +1732,7 @@ app.get('/api/ventas', async (req, res) => {
             SELECT v.id, v.fecha, v.cliente_id, v.cliente_nombre, v.total, v.total_ves,
                 v.moneda_original, v.tasa_cambio_usada, v.tipo_venta, v.metodo_pago,
                 v.referencia_pago, v.fecha_vencimiento, v.estado_pago, v.monto_pagado, v.saldo_pendiente,
+                v.descuento_global, v.descuento_motivo,
                 c.nombre as cliente_nombre_completo, c.telefono as cliente_telefono
             FROM ventas v
             LEFT JOIN clientes c ON v.cliente_id = c.id
@@ -1777,6 +1810,7 @@ app.get('/api/ventas', async (req, res) => {
             result.rows.map(async (venta) => {
                 const detalles = await db.query(`
                     SELECT vd.producto_id, vd.cantidad, vd.precio_unitario, vd.total_linea,
+                           vd.descuento_monto, vd.descuento_prc,
                            p.nombre as producto_nombre, p.unidad as producto_unidad
                     FROM venta_detalles vd
                     LEFT JOIN productos p ON vd.producto_id = p.id
@@ -4028,6 +4062,13 @@ async function initDb() {
                 moneda_original VARCHAR(10) DEFAULT 'USD'
             )
         `);
+
+        // Descuentos en ventas
+        await db.query(`ALTER TABLE ventas ADD COLUMN IF NOT EXISTS descuento_global DECIMAL(12,2) DEFAULT 0`);
+        await db.query(`ALTER TABLE ventas ADD COLUMN IF NOT EXISTS descuento_motivo VARCHAR(255)`);
+        await db.query(`ALTER TABLE venta_detalles ADD COLUMN IF NOT EXISTS descuento_monto DECIMAL(12,2) DEFAULT 0`);
+        await db.query(`ALTER TABLE venta_detalles ADD COLUMN IF NOT EXISTS descuento_prc DECIMAL(5,2) DEFAULT 0`);
+
         await db.query(`
             CREATE TABLE IF NOT EXISTS venta_pagos (
                 id SERIAL PRIMARY KEY,
