@@ -1,6 +1,6 @@
 const express = require('express');
 const cors = require('cors');
-// require('dotenv').config(); // Eliminado para evitar conflicto
+require('dotenv').config();
 const nodemailer = require('nodemailer');
 const crypto = require('crypto');
 const fs = require('fs');
@@ -1436,6 +1436,7 @@ app.post('/api/ventas', async (req, res) => {
         }
 
         const descuentoGlobalNum = Math.max(0, parseFloat(descuento_global) || 0);
+        const descuentoPorcentajeNum = Math.max(0, parseFloat(req.body.descuento_porcentaje) || 0);
 
         // Sumar todos los totales de linea considerando descuentos por linea si vienen del frontend. 
         // El total real ya viene reflejado de la sumatoria `item.cantidad * item.precio_unitario - item.descuento_monto`.
@@ -1447,17 +1448,17 @@ app.post('/api/ventas', async (req, res) => {
         let total = subtotalCalculado - totalDescuentosLineas - descuentoGlobalNum;
         if (total < 0) total = 0;
 
-        // Lógica corregida: si el estado es pendiente o parcial, debe ser crédito
+        // Lógica corregida: 100% descuento es 'free', sino crédito o pagado
         const esCredito = tipo_venta === 'credito' || (tipo_venta === 'inmediato' && !metodo_pago);
-        const estado_pago = esCredito ? 'pendiente' : 'pagado';
-        const monto_pagado = esCredito ? 0 : total;
-        const saldo_pendiente = esCredito ? total : 0;
+        const estado_pago = descuentoPorcentajeNum === 100 ? 'free' : (esCredito ? 'pendiente' : 'pagado');
+        const monto_pagado = (estado_pago === 'free' || esCredito) ? 0 : total;
+        const saldo_pendiente = (estado_pago === 'free' || !esCredito) ? 0 : total;
         const total_ves = (moneda === 'VES' && tasa_cambio) ? total : null;
 
         const ventaResult = await client.query(
-            `INSERT INTO ventas (cliente_id, cliente_nombre, total, total_ves, moneda_original, tasa_cambio_usada, tipo_venta, metodo_pago, referencia_pago, fecha_vencimiento, estado_pago, monto_pagado, saldo_pendiente, descuento_global)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,
-            [cliente_id || null, cliente_nombre || 'Cliente general', total, total_ves, moneda || 'USD', tasa_cambio || 1, tipo_venta || 'inmediato', metodo_pago || null, referencia_pago || null, fecha_vencimiento || null, estado_pago, monto_pagado, saldo_pendiente, descuentoGlobalNum]
+            `INSERT INTO ventas (cliente_id, cliente_nombre, total, total_ves, moneda_original, tasa_cambio_usada, tipo_venta, metodo_pago, referencia_pago, fecha_vencimiento, estado_pago, monto_pagado, saldo_pendiente, descuento_global, descuento_porcentaje)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *`,
+            [cliente_id || null, cliente_nombre || 'Cliente general', total, total_ves, moneda || 'USD', tasa_cambio || 1, tipo_venta || 'inmediato', metodo_pago || null, referencia_pago || null, fecha_vencimiento || null, estado_pago, monto_pagado, saldo_pendiente, descuentoGlobalNum, descuentoPorcentajeNum]
         );
         const ventaId = ventaResult.rows[0].id;
 
@@ -1595,8 +1596,13 @@ app.post('/api/ventas/:id/pagos', async (req, res) => {
         if (montoAplicar <= 0 && descuentoNum <= 0) throw new Error('Monto o descuento invalido');
 
         const nuevoSaldo = Math.max(0, saldoActualEnVES - montoAplicar);
-        const nuevoEstado = nuevoSaldo <= 0.001 ? 'pagado' : 'parcial';
+        let nuevoEstado = nuevoSaldo <= 0.001 ? 'pagado' : 'parcial';
         const nuevoMontoPagado = montoPagadoActual + montoAplicar;
+        
+        // Si se descuenta la totalidad sin haber pagado un centavo, es free
+        if (nuevoSaldo <= 0.001 && montoPagadoActual <= 0.001 && montoAplicar <= 0.001) {
+            nuevoEstado = 'free';
+        }
         
         // Convertir el nuevo saldo de vuelta a la moneda original para guardarlo
         let nuevoSaldoParaGuardar;
@@ -3596,8 +3602,9 @@ async function ejecutarActualizacionTasaDiaria({ forzarHorario = false, ipAddres
     const horaActualVzla = `${ahoraVzla.getHours().toString().padStart(2, '0')}:${ahoraVzla.getMinutes().toString().padStart(2, '0')}`;
 
     if (!forzarHorario && !enHorarioPermitido) {
+        console.log('⚠️ [BCV] Intento de actualización fuera de horario:', { diaSemana, horaActualVzla });
         const actual = await db.query(
-            'SELECT * FROM tasas_cambio WHERE activa = true ORDER BY fecha DESC, id DESC LIMIT 1'
+            'SELECT * FROM tasas_cambio WHERE activa = true ORDER BY fecha::date DESC, id DESC LIMIT 1'
         );
 
         return {
@@ -3919,9 +3926,9 @@ app.post('/api/tasas-cambio', async (req, res) => {
             return res.status(400).json({ error: 'Fecha y tasa son requeridos' });
         }
         
-        // Verificar si ya existe una tasa para esa fecha
+        // Verificar si ya existe una tasa para esa fecha usando comparación de fecha pura (evita timezone shift)
         const existente = await db.query(
-            'SELECT id FROM tasas_cambio WHERE DATE(fecha) = DATE($1)',
+            'SELECT id FROM tasas_cambio WHERE fecha::date = $1::date',
             [fechaNormalizada]
         );
         
@@ -3931,7 +3938,7 @@ app.post('/api/tasas-cambio', async (req, res) => {
 
             // Actualizar tasa existente
             await db.query(
-                'UPDATE tasas_cambio SET tasa_bcv = $1, fuente = $2, activa = true, actualizado_en = NOW() WHERE DATE(fecha) = DATE($3)',
+                'UPDATE tasas_cambio SET tasa_bcv = $1, fuente = $2, activa = true, actualizado_en = NOW() WHERE fecha::date = $3::date',
                 [tasa_bcv, fuente || 'BCV', fechaNormalizada]
             );
             
@@ -3984,7 +3991,7 @@ app.delete('/api/tasas-cambio/:id', async (req, res) => {
 app.post('/api/tasas-cambio/actualizar-diaria', async (req, res) => {
     try {
         const result = await ejecutarActualizacionTasaDiaria({
-            forzarHorario: false,
+            forzarHorario: true, // Siempre permitir si es solicitado manualmente
             ipAddress: req.ip,
             userAgent: req.get('User-Agent')
         });
@@ -4502,12 +4509,14 @@ app.get('/api/dashboard/stats', async (req, res) => {
         const ventasStats = await db.query(`
             SELECT 
                 COUNT(*) as total_ventas,
-                COALESCE(SUM(CAST(REPLACE(REPLACE(total, ',', '.'), '"', '') AS NUMERIC)), 0) as total_ingresos,
-                COALESCE(AVG(CAST(REPLACE(REPLACE(total, ',', '.'), '"', '') AS NUMERIC)), 0) as promedio_venta,
+                COALESCE(SUM(CASE WHEN estado_pago != 'free' THEN CAST(REPLACE(REPLACE(total, ',', '.'), '"', '') AS NUMERIC) ELSE 0 END), 0) as total_ingresos,
+                COALESCE(AVG(CASE WHEN estado_pago != 'free' THEN CAST(REPLACE(REPLACE(total, ',', '.'), '"', '') AS NUMERIC) END), 0) as promedio_venta,
                 COUNT(CASE WHEN estado_pago = 'pagado' THEN 1 END) as ventas_pagadas,
                 COUNT(CASE WHEN estado_pago = 'pendiente' THEN 1 END) as ventas_pendientes,
                 COUNT(CASE WHEN DATE(fecha) = CURRENT_DATE THEN 1 END) as ventas_hoy,
-                COALESCE(SUM(CASE WHEN DATE(fecha) = CURRENT_DATE THEN CAST(REPLACE(REPLACE(total, ',', '.'), '"', '') AS NUMERIC) ELSE 0 END), 0) as total_hoy
+                COALESCE(SUM(CASE WHEN DATE(fecha) = CURRENT_DATE AND estado_pago != 'free' THEN CAST(REPLACE(REPLACE(total, ',', '.'), '"', '') AS NUMERIC) ELSE 0 END), 0) as total_hoy,
+                COUNT(CASE WHEN estado_pago = 'free' THEN 1 END) as cantidad_descuentos,
+                COALESCE(SUM(CASE WHEN estado_pago = 'free' THEN CAST(REPLACE(REPLACE(total, ',', '.'), '"', '') AS NUMERIC) ELSE COALESCE(descuento_global, 0) END), 0) as total_descuentos_otorgados
             FROM ventas 
             WHERE DATE(fecha) >= CURRENT_DATE - INTERVAL '30 days'
         `);
@@ -4557,7 +4566,9 @@ app.get('/api/dashboard/stats', async (req, res) => {
                 ventas_pagadas: parseInt(ventasStats.rows[0].ventas_pagadas),
                 ventas_pendientes: parseInt(ventasStats.rows[0].ventas_pendientes),
                 ventas_hoy: parseInt(ventasStats.rows[0].ventas_hoy),
-                total_hoy: parseFloat(ventasStats.rows[0].total_hoy)
+                total_hoy: parseFloat(ventasStats.rows[0].total_hoy),
+                cantidad_descuentos: parseInt(ventasStats.rows[0].cantidad_descuentos),
+                total_descuentos_otorgados: parseFloat(ventasStats.rows[0].total_descuentos_otorgados)
             },
             productos: {
                 total_productos: parseInt(productosStats.rows[0].total_productos),
