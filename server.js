@@ -1626,12 +1626,12 @@ app.post('/api/ventas/:id/pagos', async (req, res) => {
             `UPDATE ventas 
              SET saldo_pendiente = $1, 
                  estado_pago = $2, 
-                 monto_pagado = $3, 
+                 monto_pagado = COALESCE(monto_pagado,0) + $3, 
                  descuento_global = COALESCE(descuento_global, 0) + $4,
                  total = GREATEST(0, total - $4),
                  actualizado_en = NOW() 
              WHERE id = $5`,
-            [nuevoSaldoParaGuardar, nuevoEstado, nuevoMontoPagado, descuentoEnMonedaOriginal, id]
+            [nuevoSaldoParaGuardar, nuevoEstado, montoAplicar, descuentoEnMonedaOriginal, id]
         );
         const montoOriginalNum = parseFloat(monto_original);
         const montoOriginalRegistro = Number.isFinite(montoOriginalNum) && montoOriginalNum > 0
